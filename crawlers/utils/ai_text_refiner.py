@@ -60,7 +60,14 @@ class AITextRefiner:
 2. 불필요한 공백을 정리하세요
 3. 문장 구조를 자연스럽게 다듬으세요
 4. 원문의 의미를 최대한 보존하세요
-5. 숫자, 날짜, 고유명사는 특히 주의해서 수정하세요
+
+[중요: 숫자 처리 규칙]
+- 숫자 값 자체는 절대 변경하지 마세요 (1234 → 1235 금지)
+- 숫자 형식만 수정 가능합니다:
+  * 천단위 구분: 1000000 → 1,000,000 (허용)
+  * OCR 오인식: O → 0, l → 1, S → 5 (명백한 경우만)
+- 금액, 통계, 날짜의 숫자는 원본 그대로 유지
+- 숫자가 불확실하면 원본 유지하고 corrections에 "uncertain" 표시
 
 JSON 형식으로 응답하세요:
 {{
@@ -136,6 +143,40 @@ JSON 형식으로 응답하세요:
     "data_types": {{"열1": "string|number|date", ...}},
     "corrections": [...],
     "confidence": 0.0-1.0
+}}
+
+JSON만 출력하세요."""
+
+    VERIFY_NUMBERS_PROMPT = """OCR로 추출된 텍스트에서 숫자의 신뢰도를 평가하세요.
+
+[원본 텍스트]
+{text}
+
+[지시사항]
+1. 텍스트에서 모든 숫자를 찾으세요 (금액, 날짜, 통계, 전화번호 등)
+2. 각 숫자의 OCR 신뢰도를 평가하세요
+3. 숫자 값은 절대 수정하지 마세요
+4. 불확실한 숫자만 플래그 표시하세요
+
+평가 기준:
+- O/0, l/1, S/5, B/8 혼동 가능성
+- 문맥상 숫자 범위가 타당한지 (나이: 0-150, 연도: 1900-2100 등)
+- 자릿수가 맞는지
+
+JSON 형식으로 응답하세요:
+{{
+    "numbers_found": [
+        {{
+            "value": "원본 숫자 그대로",
+            "type": "money|date|statistic|phone|other",
+            "confidence": 0.0-1.0,
+            "position": "텍스트 내 위치 설명",
+            "uncertain_chars": ["불확실한 문자 위치"],
+            "needs_review": true|false
+        }}
+    ],
+    "high_confidence_count": 0,
+    "needs_review_count": 0
 }}
 
 JSON만 출력하세요."""
@@ -402,6 +443,101 @@ JSON만 출력하세요."""
             logger.error(f"Table extraction failed: {e}")
             return {"success": False, "error": str(e)}
 
+    def verify_numbers(self, text: str) -> Dict[str, Any]:
+        """
+        Verify numbers in OCR text without modifying them.
+
+        Numbers are flagged for review but never changed.
+
+        Args:
+            text: OCR extracted text
+
+        Returns:
+            Number verification results with confidence scores
+        """
+        if not text or not text.strip():
+            return {"success": False, "error": "Empty text"}
+
+        try:
+            prompt = self.VERIFY_NUMBERS_PROMPT.format(text=text)
+            response = self._call_gpt(prompt, temperature=0.1)
+            result = self._parse_json_response(response)
+            result["success"] = True
+            return result
+
+        except Exception as e:
+            logger.error(f"Number verification failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def refine_text_preserve_numbers(self, text: str) -> RefinementResult:
+        """
+        Refine text while strictly preserving all numbers.
+
+        This method:
+        1. Extracts all numbers from text
+        2. Replaces them with placeholders
+        3. Refines the text
+        4. Restores original numbers
+        5. Separately verifies number confidence
+
+        Args:
+            text: Raw OCR text
+
+        Returns:
+            RefinementResult with numbers preserved
+        """
+        import re
+
+        # Extract numbers with their positions
+        number_pattern = re.compile(
+            r'[\d,\.]+[%원달러만억천백십]?|'
+            r'\d{2,4}[-./년]\d{1,2}[-./월]\d{1,2}일?|'
+            r'\d{2,4}[-./]\d{1,2}[-./]\d{1,2}'
+        )
+
+        numbers = []
+        placeholder_text = text
+
+        for i, match in enumerate(number_pattern.finditer(text)):
+            placeholder = f"__NUM_{i}__"
+            numbers.append({
+                "placeholder": placeholder,
+                "original": match.group(),
+                "start": match.start(),
+                "end": match.end()
+            })
+
+        # Replace numbers with placeholders (reverse order to preserve positions)
+        for num_info in reversed(numbers):
+            placeholder_text = (
+                placeholder_text[:num_info["start"]] +
+                num_info["placeholder"] +
+                placeholder_text[num_info["end"]:]
+            )
+
+        # Refine text without numbers
+        refined_result = self.refine_text(placeholder_text)
+
+        if not refined_result.success:
+            return refined_result
+
+        # Restore original numbers
+        restored_text = refined_result.refined_text
+        for num_info in numbers:
+            restored_text = restored_text.replace(
+                num_info["placeholder"],
+                num_info["original"]
+            )
+
+        # Verify numbers separately
+        number_verification = self.verify_numbers(text)
+
+        refined_result.refined_text = restored_text
+        refined_result.structured_data["number_verification"] = number_verification
+        refined_result.structured_data["numbers_preserved"] = [n["original"] for n in numbers]
+
+        return refined_result
+
     def verify_and_improve(
         self,
         extracted_data: Dict[str, Any],
@@ -464,7 +600,8 @@ JSON만 출력하세요."""
     def smart_refine(
         self,
         text: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        preserve_numbers: bool = True
     ) -> RefinementResult:
         """
         Intelligently refine text based on detected content type.
@@ -472,6 +609,7 @@ JSON만 출력하세요."""
         Args:
             text: Raw OCR text
             context: Optional context hints
+            preserve_numbers: If True, numbers are never modified (default: True)
 
         Returns:
             RefinementResult
@@ -480,11 +618,18 @@ JSON만 출력하세요."""
         content_type = self._detect_content_type(text, context)
 
         if content_type == "news":
-            return self.extract_news_structure(text)
+            result = self.extract_news_structure(text)
+            # Add number verification for news (statistics, dates matter)
+            if preserve_numbers:
+                num_verify = self.verify_numbers(text)
+                result.structured_data["number_verification"] = num_verify
+            return result
         elif content_type == "table":
-            # Convert to rows and extract
+            # Tables usually contain important numbers
             rows = [line.split() for line in text.split('\n') if line.strip()]
             table_result = self.extract_table_structure(rows)
+            if preserve_numbers:
+                table_result["number_verification"] = self.verify_numbers(text)
             return RefinementResult(
                 success=table_result.get("success", False),
                 original_text=text,
@@ -492,7 +637,11 @@ JSON만 출력하세요."""
                 confidence=table_result.get("confidence", 0.5)
             )
         else:
-            return self.refine_text(text)
+            # Use number-preserving refinement by default
+            if preserve_numbers:
+                return self.refine_text_preserve_numbers(text)
+            else:
+                return self.refine_text(text)
 
     def _detect_content_type(
         self,
