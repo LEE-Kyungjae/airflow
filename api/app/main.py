@@ -5,23 +5,25 @@ This module provides the REST API for managing crawling sources,
 crawlers, error handling, and dashboard data.
 """
 
-import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.middleware import SlowAPIMiddleware
 
-from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring
+from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, reviews
 from app.services.mongo_service import MongoService
+from app.auth import APIKeyAuth, JWTAuth
+from app.core import configure_logging, get_logger, CorrelationIdMiddleware
+from app.middleware.rate_limiter import limiter, RateLimitExceeded, rate_limit_exceeded_handler
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Configure structured logging
+configure_logging()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -55,14 +57,37 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# CORS 설정 (환경별)
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
+if not ALLOWED_ORIGINS or ALLOWED_ORIGINS == [""]:
+    # 개발 환경 기본값
+    ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:8000", "http://localhost:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=ALLOWED_ORIGINS if os.getenv("ENV") == "production" else ["*"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+    max_age=86400,
 )
+
+# Trusted Host 미들웨어 (프로덕션)
+if os.getenv("ENV") == "production":
+    ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "").split(",")
+    if ALLOWED_HOSTS and ALLOWED_HOSTS != [""]:
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=ALLOWED_HOSTS
+        )
+
+# Rate limiting middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# Correlation ID middleware for request tracing
+app.add_middleware(CorrelationIdMiddleware)
 
 
 # Exception handlers
@@ -104,9 +129,11 @@ async def root():
 
 
 # Include routers
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(sources.router, prefix="/api/sources", tags=["Sources"])
 app.include_router(crawlers.router, prefix="/api/crawlers", tags=["Crawlers"])
 app.include_router(errors.router, prefix="/api/errors", tags=["Errors"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(quick_add.router, prefix="/api/quick-add", tags=["Quick Add"])
 app.include_router(monitoring.router, prefix="/api/monitoring", tags=["Monitoring"])
+app.include_router(reviews.router, prefix="/api/reviews", tags=["Reviews"])

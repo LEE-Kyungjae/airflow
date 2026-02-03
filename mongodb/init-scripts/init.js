@@ -247,6 +247,90 @@ db.createCollection('crawl_data');
 db.crawl_data.createIndex({ _source_id: 1, _data_date: -1 });
 db.crawl_data.createIndex({ _crawled_at: -1 });
 
+// ============== Data Review/Verification Collections ==============
+
+// Data Reviews - 데이터 검토 상태
+db.createCollection('data_reviews', {
+  validator: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['crawl_result_id', 'source_id', 'review_status', 'created_at'],
+      properties: {
+        crawl_result_id: { bsonType: 'objectId' },
+        source_id: { bsonType: 'objectId' },
+        data_record_index: { bsonType: 'int' },  // Index within crawl result data array
+        review_status: {
+          enum: ['pending', 'approved', 'on_hold', 'needs_correction', 'corrected']
+        },
+        reviewer_id: { bsonType: 'string' },
+        reviewed_at: { bsonType: 'date' },
+        original_data: { bsonType: 'object' },    // Original extracted data
+        corrected_data: { bsonType: 'object' },   // Corrected data (if any)
+        corrections: {
+          bsonType: 'array',
+          items: {
+            bsonType: 'object',
+            properties: {
+              field: { bsonType: 'string' },
+              original_value: { bsonType: ['string', 'number', 'null'] },
+              corrected_value: { bsonType: ['string', 'number', 'null'] },
+              reason: { bsonType: 'string' }
+            }
+          }
+        },
+        source_highlights: {
+          bsonType: 'array',
+          items: {
+            bsonType: 'object',
+            properties: {
+              field: { bsonType: 'string' },
+              bbox: {
+                bsonType: 'object',
+                properties: {
+                  x: { bsonType: 'double' },
+                  y: { bsonType: 'double' },
+                  width: { bsonType: 'double' },
+                  height: { bsonType: 'double' }
+                }
+              },
+              page: { bsonType: 'int' },
+              selector: { bsonType: 'string' }
+            }
+          }
+        },
+        confidence_score: { bsonType: 'double' },
+        ocr_confidence: { bsonType: 'double' },
+        ai_confidence: { bsonType: 'double' },
+        needs_number_review: { bsonType: 'bool' },
+        uncertain_numbers: { bsonType: 'array' },
+        notes: { bsonType: 'string' },
+        review_duration_ms: { bsonType: 'int' },
+        created_at: { bsonType: 'date' },
+        updated_at: { bsonType: 'date' }
+      }
+    }
+  }
+});
+
+// Data Reviews indexes
+db.data_reviews.createIndex({ crawl_result_id: 1, data_record_index: 1 });
+db.data_reviews.createIndex({ source_id: 1, review_status: 1 });
+db.data_reviews.createIndex({ review_status: 1, created_at: -1 });
+db.data_reviews.createIndex({ reviewer_id: 1, reviewed_at: -1 });
+db.data_reviews.createIndex({ needs_number_review: 1, review_status: 1 });
+db.data_reviews.createIndex({ created_at: -1 });
+
+// Review Queue - 검토 대기열 (빠른 조회용)
+db.createCollection('review_queue');
+db.review_queue.createIndex({ source_id: 1, priority: -1, created_at: 1 });
+db.review_queue.createIndex({ assigned_to: 1, status: 1 });
+db.review_queue.createIndex({ status: 1, created_at: 1 });
+
+// Review Sessions - 검토 세션 (통계용)
+db.createCollection('review_sessions');
+db.review_sessions.createIndex({ reviewer_id: 1, started_at: -1 });
+db.review_sessions.createIndex({ source_id: 1 });
+
 print('MongoDB initialization completed successfully!');
 print('Collections created:');
 print('  - Core: sources, crawlers, crawl_results, crawler_history, error_logs');

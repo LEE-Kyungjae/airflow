@@ -184,3 +184,90 @@ class PaginatedResponse(BaseModel, Generic[T]):
     page: int
     page_size: int
     total_pages: int
+
+
+# ============== Data Review/Verification Schemas ==============
+
+class SourceHighlight(BaseModel):
+    """Highlight region on source document."""
+    field: str = Field(..., description="Field name this highlight corresponds to")
+    bbox: Optional[Dict[str, float]] = Field(None, description="Bounding box {x, y, width, height}")
+    page: Optional[int] = Field(None, description="Page number for PDFs")
+    selector: Optional[str] = Field(None, description="CSS selector for HTML sources")
+
+
+class FieldCorrection(BaseModel):
+    """Correction for a single field."""
+    field: str = Field(..., description="Field name")
+    original_value: Optional[Any] = Field(None, description="Original extracted value")
+    corrected_value: Optional[Any] = Field(None, description="Corrected value")
+    reason: Optional[str] = Field(None, description="Reason for correction")
+
+
+class ReviewStatusUpdate(BaseModel):
+    """Request model for updating review status."""
+    status: str = Field(
+        ...,
+        pattern="^(approved|on_hold|needs_correction|corrected)$",
+        description="New review status"
+    )
+    corrections: Optional[List[FieldCorrection]] = Field(None, description="Field corrections")
+    notes: Optional[str] = Field(None, description="Reviewer notes")
+    review_duration_ms: Optional[int] = Field(None, description="Time spent reviewing")
+
+
+class DataReviewResponse(BaseModel):
+    """Response model for data review."""
+    id: str = Field(..., alias="_id")
+    crawl_result_id: str
+    source_id: str
+    data_record_index: int = 0
+    review_status: str
+    reviewer_id: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    original_data: Dict[str, Any] = Field(default_factory=dict)
+    corrected_data: Optional[Dict[str, Any]] = None
+    corrections: List[FieldCorrection] = Field(default_factory=list)
+    source_highlights: List[SourceHighlight] = Field(default_factory=list)
+    confidence_score: Optional[float] = None
+    ocr_confidence: Optional[float] = None
+    ai_confidence: Optional[float] = None
+    needs_number_review: bool = False
+    uncertain_numbers: List[Dict[str, Any]] = Field(default_factory=list)
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class ReviewQueueItem(BaseModel):
+    """Item in review queue with source info."""
+    review: DataReviewResponse
+    source_name: str
+    source_type: str
+    source_url: str
+    total_in_queue: int
+    current_position: int
+
+
+class ReviewSessionStats(BaseModel):
+    """Statistics for a review session."""
+    total_reviewed: int
+    approved: int
+    on_hold: int
+    needs_correction: int
+    corrected: int
+    avg_review_time_ms: float
+    session_duration_ms: int
+
+
+class ReviewDashboardResponse(BaseModel):
+    """Dashboard data for review system."""
+    pending_count: int
+    today_reviewed: int
+    approval_rate: float
+    avg_confidence: float
+    needs_number_review_count: int
+    by_source: List[Dict[str, Any]]
+    recent_reviews: List[DataReviewResponse]
