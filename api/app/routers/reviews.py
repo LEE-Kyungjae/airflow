@@ -19,10 +19,18 @@ from ..models.schemas import (
     ReviewDashboardResponse,
     PaginatedResponse
 )
-from ..services.mongo_service import get_db
+from ..services.mongo_service import get_db, MongoService
+from ..services.data_promotion import DataPromotionService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
+
+
+def get_promotion_service(db) -> DataPromotionService:
+    """Get data promotion service instance."""
+    # For sync operations, we need the sync db
+    mongo = MongoService()
+    return DataPromotionService(mongo.db)
 
 
 def serialize_doc(doc: dict) -> dict:
@@ -274,10 +282,10 @@ async def update_review(
     Update review status.
 
     Actions:
-    - approved: Data is correct, mark as verified
+    - approved: Data is correct → promote staging to production
     - on_hold: Needs more investigation, skip for now
     - needs_correction: Data has errors, awaiting correction
-    - corrected: Corrections have been made
+    - corrected: Corrections have been made → promote with corrections
     """
     review = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
     if not review:
@@ -296,9 +304,12 @@ async def update_review(
     if update.review_duration_ms:
         update_data["review_duration_ms"] = update.review_duration_ms
 
+    corrections_list = None
+
     # Handle corrections
     if update.status in ["needs_correction", "corrected"] and update.corrections:
         update_data["corrections"] = [c.model_dump() for c in update.corrections]
+        corrections_list = update_data["corrections"]
 
         # If corrected, create corrected_data from original + corrections
         if update.status == "corrected":
@@ -313,23 +324,48 @@ async def update_review(
         {"$set": update_data}
     )
 
-    # If corrected, also update the actual data in crawl_data collection
-    if update.status == "corrected" and "corrected_data" in update_data:
-        # Update the crawl_data record
-        await db.crawl_data.update_one(
-            {
-                "_crawl_result_id": ObjectId(review["crawl_result_id"]),
-                "_record_index": review.get("data_record_index", 0)
-            },
-            {
-                "$set": {
-                    **update_data["corrected_data"],
-                    "_verified": True,
-                    "_verified_at": datetime.utcnow(),
-                    "_verified_by": reviewer_id
-                }
-            }
-        )
+    # Promote to production on approval or correction
+    if update.status in ["approved", "corrected"]:
+        staging_id = review.get("staging_id")
+
+        if staging_id:
+            # Use promotion service to move staging → production
+            promotion_service = get_promotion_service(db)
+            success, production_id, message = promotion_service.promote_to_production(
+                staging_id=ObjectId(staging_id),
+                reviewer_id=reviewer_id,
+                corrections=corrections_list
+            )
+
+            if success:
+                # Update review with production reference
+                await db.data_reviews.update_one(
+                    {"_id": ObjectId(review_id)},
+                    {"$set": {
+                        "production_id": production_id,
+                        "promoted_at": datetime.utcnow()
+                    }}
+                )
+                logger.info(f"Promoted staging/{staging_id} to production/{production_id}")
+            else:
+                logger.warning(f"Promotion failed for review {review_id}: {message}")
+        else:
+            # Legacy path: direct update to crawl_data (for existing data without staging)
+            if update.status == "corrected" and "corrected_data" in update_data:
+                await db.crawl_data.update_one(
+                    {
+                        "_crawl_result_id": ObjectId(review["crawl_result_id"]),
+                        "_record_index": review.get("data_record_index", 0)
+                    },
+                    {
+                        "$set": {
+                            **update_data["corrected_data"],
+                            "_verified": True,
+                            "_verified_at": datetime.utcnow(),
+                            "_verified_by": reviewer_id
+                        }
+                    }
+                )
 
     updated = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
     return serialize_doc(updated)

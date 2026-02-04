@@ -86,6 +86,10 @@ class ETLResult:
     sample_data: List[Dict]
     execution_time_ms: int
     metadata: Dict[str, Any]
+    # 변경 감지 통계
+    skipped_unchanged: int = 0
+    new_records: int = 0
+    modified_records: int = 0
 
 
 class DataTransformer:
@@ -526,29 +530,49 @@ class DataTransformer:
 
 
 class DataLoader:
-    """데이터 적재기"""
+    """데이터 적재기 - Staging 컬렉션에 저장"""
 
-    def __init__(self, mongo_service, config: LoadConfig):
+    # Staging 컬렉션 매핑 (production → staging)
+    STAGING_COLLECTION_MAP = {
+        'news_articles': 'staging_news',
+        'financial_data': 'staging_financial',
+        'stock_prices': 'staging_financial',
+        'exchange_rates': 'staging_financial',
+        'market_indices': 'staging_financial',
+        'announcements': 'staging_news',
+        'crawl_data': 'staging_data',
+    }
+
+    def __init__(self, mongo_service, config: LoadConfig, use_staging: bool = True):
         self.mongo = mongo_service
         self.config = config
+        self.use_staging = use_staging
 
     async def load(
         self,
         data: List[Dict[str, Any]],
-        source_id: str
+        source_id: str,
+        crawl_result_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """데이터 적재"""
+        """데이터를 Staging 컬렉션에 적재"""
         if not data:
-            return {'loaded': 0, 'duplicates': 0, 'errors': []}
+            return {'loaded': 0, 'duplicates': 0, 'errors': [], 'staging_ids': []}
 
         result = {
             'loaded': 0,
             'duplicates': 0,
             'errors': [],
-            'upserted_ids': []
+            'upserted_ids': [],
+            'staging_ids': []
         }
 
-        collection_name = self._get_collection_name(data[0] if data else {})
+        # Staging 컬렉션 이름 결정
+        base_collection = self._get_collection_name(data[0] if data else {})
+        if self.use_staging:
+            collection_name = self.STAGING_COLLECTION_MAP.get(base_collection, 'staging_data')
+        else:
+            collection_name = base_collection
+
         collection = self.mongo.db[collection_name]
 
         # 인덱스 생성
@@ -556,10 +580,17 @@ class DataLoader:
             await self._ensure_indexes(collection)
 
         # 배치 처리
-        for record in data:
+        for idx, record in enumerate(data):
             try:
                 # 소스 ID 추가
                 record['_source_id'] = source_id
+
+                # Staging 메타데이터 추가
+                if self.use_staging:
+                    record['_review_status'] = 'pending'
+                    record['_record_index'] = idx
+                    if crawl_result_id:
+                        record['_crawl_result_id'] = crawl_result_id
 
                 if self.config.upsert and self.config.upsert_key:
                     # Upsert 모드
@@ -575,6 +606,7 @@ class DataLoader:
                         if update_result.upserted_id:
                             result['loaded'] += 1
                             result['upserted_ids'].append(str(update_result.upserted_id))
+                            result['staging_ids'].append(str(update_result.upserted_id))
                         elif update_result.modified_count > 0:
                             result['loaded'] += 1
                         else:
@@ -584,11 +616,13 @@ class DataLoader:
                         insert_result = collection.insert_one(record)
                         result['loaded'] += 1
                         result['upserted_ids'].append(str(insert_result.inserted_id))
+                        result['staging_ids'].append(str(insert_result.inserted_id))
                 else:
                     # 직접 삽입
                     insert_result = collection.insert_one(record)
                     result['loaded'] += 1
                     result['upserted_ids'].append(str(insert_result.inserted_id))
+                    result['staging_ids'].append(str(insert_result.inserted_id))
 
             except Exception as e:
                 if 'duplicate key' in str(e).lower():
@@ -596,6 +630,10 @@ class DataLoader:
                 else:
                     result['errors'].append(str(e)[:200])
                     logger.error(f"Load error: {e}")
+
+        # Staging 컬렉션 정보 추가
+        result['collection'] = collection_name
+        result['is_staging'] = self.use_staging
 
         return result
 
@@ -741,12 +779,32 @@ class ETLPipeline:
         source_id: str,
         category: Optional[DataCategory] = None,
         transform_config: Optional[TransformConfig] = None,
-        load_config: Optional[LoadConfig] = None
+        load_config: Optional[LoadConfig] = None,
+        skip_unchanged: bool = True,
+        hash_fields: Optional[List[str]] = None,
+        use_staging: bool = True,
+        crawl_result_id: Optional[str] = None
     ) -> ETLResult:
-        """ETL 파이프라인 실행"""
+        """
+        ETL 파이프라인 실행 - 데이터를 Staging에 저장
+
+        Args:
+            raw_data: 크롤링된 원본 데이터
+            source_id: 소스 ID
+            category: 데이터 카테고리
+            transform_config: 변환 설정
+            load_config: 적재 설정
+            skip_unchanged: 변경되지 않은 데이터 스킵 (트래픽 최소화)
+            hash_fields: 변경 감지에 사용할 필드 목록
+            use_staging: True면 staging 컬렉션에 저장 (기본값), False면 바로 production
+            crawl_result_id: 크롤 결과 ID (리뷰 연동용)
+        """
         start_time = datetime.utcnow()
         errors = []
         warnings = []
+        skipped_unchanged = 0
+        new_count = 0
+        modified_count = 0
 
         # 1. 카테고리 자동 감지
         if not category:
@@ -759,15 +817,68 @@ class ETLPipeline:
         t_config = transform_config or default_config['transform']
         l_config = load_config or default_config['load']
 
-        # 3. Transform
-        transformer = DataTransformer(t_config)
-        transformed_data = transformer.transform(raw_data)
+        # 3. 변경 감지 (skip_unchanged=True일 때)
+        data_to_process = raw_data
+        if skip_unchanged and self.mongo:
+            try:
+                from api.app.services.change_detection import ChangeDetectionService
 
-        invalid_count = len(raw_data) - len(transformed_data)
+                change_service = ChangeDetectionService(self.mongo)
+                change_result = await change_service.check_batch(
+                    source_id=source_id,
+                    records=raw_data,
+                    hash_fields=hash_fields
+                )
+
+                # 변경된 레코드만 처리
+                data_to_process = change_result.new_records + change_result.modified_records
+                skipped_unchanged = change_result.unchanged_count
+                new_count = change_result.new_count
+                modified_count = change_result.modified_count
+
+                if skipped_unchanged > 0:
+                    skip_ratio = round(skipped_unchanged / len(raw_data) * 100, 1)
+                    warnings.append(f"Skipped {skipped_unchanged} unchanged records ({skip_ratio}%)")
+                    logger.info(f"Change detection: {new_count} new, {modified_count} modified, {skipped_unchanged} skipped")
+
+            except ImportError:
+                warnings.append("Change detection service not available, processing all records")
+            except Exception as e:
+                warnings.append(f"Change detection failed: {str(e)}, processing all records")
+                logger.warning(f"Change detection error: {e}")
+
+        # 데이터가 없으면 조기 종료
+        if not data_to_process:
+            execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            return ETLResult(
+                success=True,
+                source_id=source_id,
+                category=category,
+                extracted_count=len(raw_data),
+                transformed_count=0,
+                loaded_count=0,
+                duplicate_count=0,
+                invalid_count=0,
+                quality_score=1.0,
+                errors=[],
+                warnings=warnings + ["No changed data to process"],
+                sample_data=[],
+                execution_time_ms=execution_time,
+                metadata={'collection': l_config.collection_name, 'category': category.value, 'transform_version': '1.0'},
+                skipped_unchanged=skipped_unchanged,
+                new_records=new_count,
+                modified_records=modified_count
+            )
+
+        # 4. Transform
+        transformer = DataTransformer(t_config)
+        transformed_data = transformer.transform(data_to_process)
+
+        invalid_count = len(data_to_process) - len(transformed_data)
         if invalid_count > 0:
             warnings.append(f"{invalid_count} records failed quality check")
 
-        # 4. Deduplicate
+        # 5. Deduplicate (배치 내 중복 제거)
         if t_config.deduplicate and t_config.dedup_fields:
             before_dedup = len(transformed_data)
             transformed_data = self._deduplicate(transformed_data, t_config.dedup_fields)
@@ -775,13 +886,42 @@ class ETLPipeline:
         else:
             dup_count = 0
 
-        # 5. Load
-        loader = DataLoader(self.mongo, l_config)
-        load_result = await loader.load(transformed_data, source_id)
+        # 6. Load to Staging (or Production if use_staging=False)
+        loader = DataLoader(self.mongo, l_config, use_staging=use_staging)
+        load_result = await loader.load(transformed_data, source_id, crawl_result_id)
 
         errors.extend(load_result.get('errors', []))
 
-        # 6. 결과 생성
+        # 7. 해시 업데이트 (성공적으로 저장된 경우)
+        if skip_unchanged and self.mongo and load_result['loaded'] > 0:
+            try:
+                from api.app.services.change_detection import ChangeDetectionService
+
+                change_service = ChangeDetectionService(self.mongo)
+                await change_service.update_hashes(
+                    source_id=source_id,
+                    records=transformed_data,
+                    hash_fields=hash_fields
+                )
+            except Exception as e:
+                warnings.append(f"Hash update failed: {str(e)}")
+
+        # 8. Staging 데이터에 대한 Review 레코드 생성
+        if use_staging and load_result['loaded'] > 0 and load_result.get('staging_ids'):
+            try:
+                review_count = await self._create_review_records(
+                    source_id=source_id,
+                    staging_ids=load_result['staging_ids'],
+                    transformed_data=transformed_data,
+                    crawl_result_id=crawl_result_id
+                )
+                if review_count > 0:
+                    warnings.append(f"Created {review_count} review records for staging data")
+            except Exception as e:
+                warnings.append(f"Review record creation failed: {str(e)}")
+                logger.error(f"Failed to create review records: {e}")
+
+        # 9. 결과 생성
         execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
 
         # 품질 점수 계산
@@ -789,7 +929,7 @@ class ETLPipeline:
         avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
 
         return ETLResult(
-            success=len(errors) == 0 and load_result['loaded'] > 0,
+            success=len(errors) == 0 and (load_result['loaded'] > 0 or skipped_unchanged > 0),
             source_id=source_id,
             category=category,
             extracted_count=len(raw_data),
@@ -803,11 +943,72 @@ class ETLPipeline:
             sample_data=transformed_data[:3] if transformed_data else [],
             execution_time_ms=execution_time,
             metadata={
-                'collection': l_config.collection_name,
+                'collection': load_result.get('collection', l_config.collection_name),
                 'category': category.value,
-                'transform_version': '1.0'
-            }
+                'transform_version': '1.0',
+                'change_detection_enabled': skip_unchanged,
+                'is_staging': load_result.get('is_staging', use_staging),
+                'staging_ids': load_result.get('staging_ids', []),
+                'crawl_result_id': crawl_result_id
+            },
+            skipped_unchanged=skipped_unchanged,
+            new_records=new_count,
+            modified_records=modified_count
         )
+
+    async def _create_review_records(
+        self,
+        source_id: str,
+        staging_ids: List[str],
+        transformed_data: List[Dict],
+        crawl_result_id: Optional[str] = None
+    ) -> int:
+        """
+        Staging 데이터에 대한 Review 레코드 생성
+
+        검토 대기열에 자동으로 등록하여 사람이 검토할 수 있게 함
+        """
+        from bson import ObjectId
+
+        created_count = 0
+        reviews_collection = self.mongo.db['data_reviews']
+
+        for idx, (staging_id, record) in enumerate(zip(staging_ids, transformed_data)):
+            try:
+                # 신뢰도 정보 추출
+                confidence = record.get('confidence', record.get('_confidence'))
+                ocr_conf = record.get('ocr_confidence', record.get('_ocr_confidence'))
+                ai_conf = record.get('ai_confidence', record.get('_ai_confidence'))
+                needs_review = record.get('needs_number_review', False)
+                uncertain = record.get('uncertain_numbers', [])
+
+                # Review 레코드 생성
+                review_doc = {
+                    'staging_id': ObjectId(staging_id),
+                    'source_id': ObjectId(source_id) if not isinstance(source_id, ObjectId) else source_id,
+                    'data_record_index': idx,
+                    'review_status': 'pending',
+                    'original_data': {k: v for k, v in record.items() if not k.startswith('_')},
+                    'confidence_score': confidence,
+                    'ocr_confidence': ocr_conf,
+                    'ai_confidence': ai_conf,
+                    'needs_number_review': needs_review,
+                    'uncertain_numbers': uncertain,
+                    'source_highlights': record.get('_highlights', []),
+                    'created_at': datetime.utcnow()
+                }
+
+                if crawl_result_id:
+                    review_doc['crawl_result_id'] = ObjectId(crawl_result_id) if not isinstance(crawl_result_id, ObjectId) else crawl_result_id
+
+                reviews_collection.insert_one(review_doc)
+                created_count += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to create review for staging_id {staging_id}: {e}")
+                continue
+
+        return created_count
 
     def _detect_category(self, data: List[Dict]) -> DataCategory:
         """데이터 카테고리 자동 감지"""

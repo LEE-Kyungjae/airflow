@@ -207,45 +207,83 @@ db.createCollection('healing_schedules');
 db.healing_schedules.createIndex({ session_id: 1 });
 db.healing_schedules.createIndex({ scheduled_at: 1 });
 
-// ============== ETL Data Collections ==============
+// ============== STAGING Data Collections (원본 데이터 - 검토 전) ==============
+// 크롤링 직후 데이터가 여기에 저장됨. 검토 승인 시 production으로 이동
 
-// News Articles
+// Staging - Generic crawl data
+db.createCollection('staging_data');
+db.staging_data.createIndex({ _source_id: 1, _crawled_at: -1 });
+db.staging_data.createIndex({ _crawl_result_id: 1, _record_index: 1 });
+db.staging_data.createIndex({ _review_status: 1, _crawled_at: -1 });
+db.staging_data.createIndex({ _crawled_at: 1 }, { expireAfterSeconds: 2592000 }); // 30 days TTL
+
+// Staging - News Articles
+db.createCollection('staging_news');
+db.staging_news.createIndex({ _source_id: 1, _crawled_at: -1 });
+db.staging_news.createIndex({ _crawl_result_id: 1 });
+db.staging_news.createIndex({ content_hash: 1 });
+db.staging_news.createIndex({ _crawled_at: 1 }, { expireAfterSeconds: 2592000 });
+
+// Staging - Financial Data
+db.createCollection('staging_financial');
+db.staging_financial.createIndex({ _source_id: 1, _crawled_at: -1 });
+db.staging_financial.createIndex({ stock_code: 1, _data_date: -1 });
+db.staging_financial.createIndex({ _crawled_at: 1 }, { expireAfterSeconds: 2592000 });
+
+// ============== PRODUCTION Data Collections (검증된 데이터 - 서비스용) ==============
+// 검토 승인된 데이터만 여기에 존재. 실제 서비스에서 조회하는 테이블
+
+// Production - News Articles
 db.createCollection('news_articles');
 db.news_articles.createIndex({ content_hash: 1 }, { unique: true, sparse: true });
 db.news_articles.createIndex({ published_at: -1 });
 db.news_articles.createIndex({ _source_id: 1, _data_date: -1 });
+db.news_articles.createIndex({ _verified: 1 });
 db.news_articles.createIndex({ _crawled_at: 1 }, { expireAfterSeconds: 7776000 }); // 90 days
 
-// Financial Data
+// Production - Financial Data
 db.createCollection('financial_data');
 db.financial_data.createIndex({ stock_code: 1, _data_date: -1 });
 db.financial_data.createIndex({ _source_id: 1 });
 db.financial_data.createIndex({ trade_date: -1 });
+db.financial_data.createIndex({ _verified: 1 });
 
-// Stock Prices
+// Production - Stock Prices
 db.createCollection('stock_prices');
 db.stock_prices.createIndex({ stock_code: 1, _data_date: 1 }, { unique: true, sparse: true });
 db.stock_prices.createIndex({ trade_date: -1 });
+db.stock_prices.createIndex({ _verified: 1 });
 
-// Exchange Rates
+// Production - Exchange Rates
 db.createCollection('exchange_rates');
 db.exchange_rates.createIndex({ currency_code: 1, _data_date: 1 }, { unique: true, sparse: true });
+db.exchange_rates.createIndex({ _verified: 1 });
 
-// Market Indices
+// Production - Market Indices
 db.createCollection('market_indices');
 db.market_indices.createIndex({ index_code: 1, _data_date: 1 }, { unique: true, sparse: true });
+db.market_indices.createIndex({ _verified: 1 });
 
-// Announcements (공시)
+// Production - Announcements (공시)
 db.createCollection('announcements');
 db.announcements.createIndex({ content_hash: 1 }, { unique: true, sparse: true });
 db.announcements.createIndex({ published_at: -1 });
 db.announcements.createIndex({ announcement_type: 1 });
+db.announcements.createIndex({ _verified: 1 });
 db.announcements.createIndex({ _crawled_at: 1 }, { expireAfterSeconds: 31536000 }); // 365 days
 
-// Generic crawl data
+// Production - Generic crawl data
 db.createCollection('crawl_data');
 db.crawl_data.createIndex({ _source_id: 1, _data_date: -1 });
+db.crawl_data.createIndex({ _verified: 1, _source_id: 1 });
 db.crawl_data.createIndex({ _crawled_at: -1 });
+
+// ============== Data Lineage (데이터 이력 추적) ==============
+db.createCollection('data_lineage');
+db.data_lineage.createIndex({ staging_id: 1 });
+db.data_lineage.createIndex({ production_id: 1 });
+db.data_lineage.createIndex({ source_id: 1, moved_at: -1 });
+db.data_lineage.createIndex({ moved_at: -1 });
 
 // ============== Data Review/Verification Collections ==============
 
