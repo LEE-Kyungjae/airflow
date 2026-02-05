@@ -15,7 +15,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
 
-from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, reviews
+from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, reviews, data_quality, metrics, lineage
 from app.services.mongo_service import MongoService
 from app.auth import APIKeyAuth, JWTAuth
 from app.core import configure_logging, get_logger, CorrelationIdMiddleware
@@ -94,15 +94,33 @@ app.add_middleware(CorrelationIdMiddleware)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler."""
+    # 로그에는 상세 정보 기록
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "message": str(exc),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    )
+
+    # 프로덕션 환경에서는 상세 에러 메시지 숨김
+    is_production = os.getenv("ENV") == "production"
+
+    if is_production:
+        # 프로덕션: 일반적인 에러 메시지만 반환
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "message": "서버 오류가 발생했습니다. 관리자에게 문의하세요.",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+    else:
+        # 개발 환경: 디버깅을 위한 상세 정보 제공
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "message": str(exc),
+                "type": type(exc).__name__,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
 
 
 # Health check endpoint
@@ -137,3 +155,6 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"]
 app.include_router(quick_add.router, prefix="/api/quick-add", tags=["Quick Add"])
 app.include_router(monitoring.router, prefix="/api/monitoring", tags=["Monitoring"])
 app.include_router(reviews.router, prefix="/api/reviews", tags=["Reviews"])
+app.include_router(data_quality.router, prefix="/api/data-quality", tags=["Data Quality"])
+app.include_router(metrics.router, tags=["Metrics"])  # /metrics (no prefix for Prometheus)
+app.include_router(lineage.router, prefix="/api/lineage", tags=["Lineage"])  # 데이터 리니지
