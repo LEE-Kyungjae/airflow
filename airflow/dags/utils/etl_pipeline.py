@@ -1052,3 +1052,182 @@ class ETLPipeline:
                 unique.append(record)
 
         return unique
+
+    async def run_with_contract_validation(
+        self,
+        raw_data: List[Dict[str, Any]],
+        source_id: str,
+        category: Optional[DataCategory] = None,
+        transform_config: Optional[TransformConfig] = None,
+        load_config: Optional[LoadConfig] = None,
+        skip_unchanged: bool = True,
+        hash_fields: Optional[List[str]] = None,
+        use_staging: bool = True,
+        crawl_result_id: Optional[str] = None,
+        data_contract: Optional[Any] = None,
+        alert_dispatcher: Optional[Any] = None
+    ) -> ETLResult:
+        """
+        데이터 계약 검증을 포함한 ETL 파이프라인 실행
+
+        Transform 후 데이터 계약을 검증하고, 실패한 데이터는 staging으로 분류합니다.
+
+        Args:
+            raw_data: 크롤링된 원본 데이터
+            source_id: 소스 ID
+            category: 데이터 카테고리
+            transform_config: 변환 설정
+            load_config: 적재 설정
+            skip_unchanged: 변경되지 않은 데이터 스킵
+            hash_fields: 변경 감지에 사용할 필드 목록
+            use_staging: staging 컬렉션 사용 여부
+            crawl_result_id: 크롤 결과 ID
+            data_contract: DataContract 인스턴스 (None이면 자동 선택)
+            alert_dispatcher: 알림 발송기
+
+        Returns:
+            ETLResult with contract validation info
+        """
+        start_time = datetime.utcnow()
+        errors = []
+        warnings = []
+        contract_validation_result = None
+
+        # 1. 카테고리 자동 감지
+        if not category:
+            category = self._detect_category(raw_data)
+            warnings.append(f"Auto-detected category: {category.value}")
+
+        # 2. 설정 로드
+        default_config = self.DEFAULT_CONFIGS.get(category, self.DEFAULT_CONFIGS[DataCategory.NEWS_ARTICLE])
+        t_config = transform_config or default_config['transform']
+        l_config = load_config or default_config['load']
+
+        # 3. Transform
+        transformer = DataTransformer(t_config)
+        transformed_data = transformer.transform(raw_data)
+
+        invalid_count = len(raw_data) - len(transformed_data)
+        if invalid_count > 0:
+            warnings.append(f"{invalid_count} records failed transform quality check")
+
+        # 4. 데이터 계약 검증
+        valid_data = transformed_data
+        invalid_data = []
+
+        try:
+            from api.app.services.data_contracts import (
+                ETLContractIntegration,
+                ValidationConfig
+            )
+
+            integration = ETLContractIntegration(
+                mongo_service=self.mongo,
+                alert_dispatcher=alert_dispatcher,
+                config=ValidationConfig(
+                    alert_on_failure=alert_dispatcher is not None,
+                    save_results=self.mongo is not None
+                )
+            )
+
+            validated = await integration.validate_before_load(
+                data=transformed_data,
+                source_id=source_id,
+                data_category=category.value if category else None,
+                contract=data_contract,
+                run_id=crawl_result_id,
+                context={'etl_category': category.value if category else 'generic'}
+            )
+
+            contract_validation_result = validated.validation_result
+            valid_data = validated.valid_data
+            invalid_data = validated.invalid_data + validated.quarantined_data
+
+            if not validated.validation_result.success:
+                warnings.append(
+                    f"Contract validation: {validated.valid_count}/{validated.total_count} passed "
+                    f"({validated.validation_result.success_rate:.1f}%)"
+                )
+
+            if invalid_data:
+                warnings.append(f"{len(invalid_data)} records failed contract validation (moved to staging)")
+
+        except ImportError:
+            warnings.append("Data contracts module not available, skipping contract validation")
+        except Exception as e:
+            warnings.append(f"Contract validation failed: {str(e)}")
+            logger.warning(f"Contract validation error: {e}")
+
+        # 5. Deduplicate (배치 내 중복 제거) - valid_data만 대상
+        if t_config.deduplicate and t_config.dedup_fields:
+            before_dedup = len(valid_data)
+            valid_data = self._deduplicate(valid_data, t_config.dedup_fields)
+            dup_count = before_dedup - len(valid_data)
+        else:
+            dup_count = 0
+
+        # 6. Load valid data
+        loader = DataLoader(self.mongo, l_config, use_staging=use_staging)
+        load_result = await loader.load(valid_data, source_id, crawl_result_id)
+        errors.extend(load_result.get('errors', []))
+
+        # 7. Load invalid data to staging (always staging for failed validation)
+        staging_invalid_result = {'loaded': 0, 'staging_ids': []}
+        if invalid_data:
+            staging_loader = DataLoader(self.mongo, l_config, use_staging=True)
+            staging_invalid_result = await staging_loader.load(invalid_data, source_id, crawl_result_id)
+
+            # Mark as validation failed
+            if staging_invalid_result.get('staging_ids'):
+                try:
+                    staging_collection = self.mongo.db[staging_loader.STAGING_COLLECTION_MAP.get(
+                        l_config.collection_name, 'staging_data'
+                    )]
+                    from bson import ObjectId
+                    staging_collection.update_many(
+                        {'_id': {'$in': [ObjectId(sid) for sid in staging_invalid_result['staging_ids']]}},
+                        {'$set': {'_validation_failed': True, '_review_status': 'validation_failed'}}
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to mark validation failed records: {e}")
+
+        # 8. 결과 생성
+        execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+
+        quality_scores = [r.get('_quality_score', 0) for r in valid_data]
+        avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
+
+        return ETLResult(
+            success=len(errors) == 0 and (load_result['loaded'] > 0 or len(invalid_data) > 0),
+            source_id=source_id,
+            category=category,
+            extracted_count=len(raw_data),
+            transformed_count=len(transformed_data),
+            loaded_count=load_result['loaded'],
+            duplicate_count=dup_count + load_result.get('duplicates', 0),
+            invalid_count=invalid_count + len(invalid_data),
+            quality_score=round(avg_quality, 3),
+            errors=errors,
+            warnings=warnings,
+            sample_data=valid_data[:3] if valid_data else [],
+            execution_time_ms=execution_time,
+            metadata={
+                'collection': load_result.get('collection', l_config.collection_name),
+                'category': category.value,
+                'transform_version': '1.0',
+                'is_staging': load_result.get('is_staging', use_staging),
+                'staging_ids': load_result.get('staging_ids', []),
+                'crawl_result_id': crawl_result_id,
+                'contract_validation': {
+                    'enabled': contract_validation_result is not None,
+                    'success': contract_validation_result.success if contract_validation_result else None,
+                    'success_rate': contract_validation_result.success_rate if contract_validation_result else None,
+                    'valid_count': len(valid_data),
+                    'invalid_count': len(invalid_data),
+                    'invalid_staging_ids': staging_invalid_result.get('staging_ids', [])
+                }
+            },
+            skipped_unchanged=0,
+            new_records=load_result['loaded'],
+            modified_records=0
+        )
