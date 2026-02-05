@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field, HttpUrl
 from app.services.mongo_service import MongoService
 from app.services.auto_discovery import AutoDiscoveryService, BatchDiscoveryService, SourceDiscoveryResult
 from app.services.airflow_trigger import AirflowTrigger
+from app.services.test_crawler import TestCrawlerService
+from app.services.instant_etl import InstantETLService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -93,6 +95,72 @@ class BatchAddResponse(BaseModel):
     results: List[QuickAddResponse]
 
 
+class TestCrawlRequest(BaseModel):
+    """테스트 크롤링 요청"""
+    url: str = Field(..., description="크롤링 대상 URL")
+    fields: List[dict] = Field(..., description="추출할 필드 목록")
+    max_records: int = Field(10, ge=1, le=100, description="최대 추출 레코드 수")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "url": "https://news.naver.com",
+                "fields": [
+                    {"name": "title", "selector": ".news_tit", "data_type": "string"},
+                    {"name": "link", "selector": ".news_tit", "data_type": "url", "attribute": "href"}
+                ],
+                "max_records": 10
+            }
+        }
+    }
+
+
+class TestCrawlResponse(BaseModel):
+    """테스트 크롤링 응답"""
+    success: bool
+    records: List[dict]
+    total_found: int
+    extracted_count: int
+    extraction_time_ms: int
+    field_stats: dict
+    warnings: List[str]
+
+
+class CreateRequest(BaseModel):
+    """커스텀 필드로 ETL 생성 요청"""
+    url: str = Field(..., description="크롤링 대상 URL")
+    name: Optional[str] = Field(None, description="소스 이름 (자동 생성 가능)")
+    fields: List[dict] = Field(..., description="추출할 필드 목록")
+    schedule: Optional[str] = Field(None, description="Cron 스케줄 (자동 추천 가능)")
+    run_test: bool = Field(True, description="생성 전 테스트 실행 여부")
+    auto_start: bool = Field(True, description="DAG 즉시 트리거 여부")
+    instant: bool = Field(True, description="즉시 생성 모드 (source_manager DAG 건너뛰기)")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "url": "https://news.naver.com",
+                "name": "네이버뉴스",
+                "fields": [
+                    {"name": "title", "selector": ".news_tit", "data_type": "string"},
+                    {"name": "link", "selector": ".news_tit", "data_type": "url", "attribute": "href"}
+                ],
+                "schedule": "0 9 * * *",
+                "run_test": True,
+                "auto_start": True,
+                "instant": True
+            }
+        }
+    }
+
+
+class TestResultSummary(BaseModel):
+    """테스트 결과 요약"""
+    success: bool
+    records_found: int
+    warnings: List[str] = []
+
+
 # ============== Dependencies ==============
 
 def get_mongo():
@@ -151,6 +219,45 @@ async def analyze_url(
     except Exception as e:
         logger.error(f"Analysis failed for {request.url}: {e}")
         raise HTTPException(status_code=500, detail=f"분석 실패: {str(e)}")
+
+
+@router.post("/test", response_model=TestCrawlResponse)
+async def test_crawl(request: TestCrawlRequest):
+    """
+    테스트 크롤링 - 저장 없이 실제 데이터 추출
+
+    /analyze → /test → /create 워크플로우:
+    1. /analyze로 필드 자동 감지
+    2. /test로 실제 데이터 추출 테스트
+    3. /create로 ETL 생성
+    """
+    crawler = TestCrawlerService()
+
+    try:
+        result = await crawler.test_crawl(
+            url=request.url,
+            fields=request.fields,
+            max_records=request.max_records
+        )
+
+        if result.error:
+            raise HTTPException(status_code=400, detail=result.error)
+
+        return TestCrawlResponse(
+            success=result.success,
+            records=result.records,
+            total_found=result.total_found,
+            extracted_count=result.extracted_count,
+            extraction_time_ms=result.extraction_time_ms,
+            field_stats=result.field_stats,
+            warnings=result.warnings
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Test crawl failed for {request.url}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"테스트 크롤링 실패: {str(e)}")
 
 
 @router.post("", response_model=QuickAddResponse, status_code=201)
@@ -286,6 +393,160 @@ async def quick_add_source(
     except Exception as e:
         logger.error(f"Quick add failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"등록 실패: {str(e)}")
+
+
+@router.post("/create", response_model=QuickAddResponse, status_code=201)
+async def create_with_custom_fields(
+    request: CreateRequest,
+    background_tasks: BackgroundTasks,
+    mongo: MongoService = Depends(get_mongo)
+):
+    """
+    커스텀 필드로 ETL 생성
+
+    /analyze에서 받은 필드를 수정한 후 이 엔드포인트로 생성합니다.
+
+    워크플로우:
+    1. /analyze로 필드 자동 감지
+    2. 필드 수정 (필요시)
+    3. /test로 테스트 (선택)
+    4. /create로 최종 생성
+
+    instant=True (기본값): 즉시 크롤러 코드 생성 + DAG 파일 작성 (2분 이내)
+    instant=False: source_manager DAG 트리거 (기존 방식, 5-10분)
+    """
+    try:
+        # 1. run_test가 true면 먼저 테스트 실행
+        test_result = None
+        if request.run_test:
+            crawler = TestCrawlerService()
+            test_result = await crawler.test_crawl(
+                url=request.url,
+                fields=request.fields,
+                max_records=5
+            )
+
+            if not test_result.success:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"테스트 크롤링 실패: {test_result.error or '데이터를 추출하지 못했습니다'}"
+                )
+
+        # 2. 소스 이름 생성
+        source_name = request.name
+        if not source_name:
+            from urllib.parse import urlparse
+            parsed = urlparse(request.url)
+            domain = parsed.netloc.replace('www.', '').split('.')[0]
+            source_name = f"{domain}_custom_{datetime.now().strftime('%m%d')}"
+
+        # 중복 체크
+        existing = mongo.get_source_by_name(source_name)
+        if existing:
+            source_name = f"{source_name}_{datetime.now().strftime('%H%M')}"
+
+        # 3. 스케줄 결정
+        schedule = request.schedule
+        if not schedule:
+            schedule = "0 * * * *"  # 기본: 매시간
+
+        # 4. 소스 데이터 구성
+        source_data = {
+            'name': source_name,
+            'url': request.url,
+            'type': 'html',
+            'fields': request.fields,
+            'schedule': schedule,
+            'status': 'pending',
+            'metadata': {
+                'custom_fields': True,
+                'instant_mode': request.instant,
+                'run_test': request.run_test,
+                'test_success': test_result.success if test_result else None,
+                'test_records_found': test_result.extracted_count if test_result else None
+            }
+        }
+
+        # 5. 소스 등록
+        source_id = mongo.create_source(source_data)
+        logger.info(f"Created custom source: {source_id}")
+
+        dag_id = None
+        message = ""
+
+        # 6. Instant 모드: 즉시 크롤러 코드 생성 + DAG 파일 작성
+        if request.instant:
+            instant_service = InstantETLService()
+            etl_result = await instant_service.create_instant_etl(
+                source_id=source_id,
+                url=request.url,
+                fields=request.fields,
+                source_name=source_name,
+                schedule=schedule,
+                metadata=source_data.get('metadata')
+            )
+
+            if etl_result.success:
+                dag_id = etl_result.dag_id
+
+                # 크롤러 정보 저장
+                mongo.db.crawlers.insert_one({
+                    '_id': source_id,
+                    'source_id': source_id,
+                    'code': etl_result.crawler_code,
+                    'version': 1,
+                    'status': 'active',
+                    'dag_id': dag_id,
+                    'created_by': 'instant',
+                    'created_at': datetime.utcnow()
+                })
+
+                # 소스 상태 업데이트
+                mongo.update_source_status(source_id, 'active')
+
+                message = f"소스 '{source_name}' 즉시 생성 완료! DAG 파일이 작성되었습니다. ({etl_result.generation_time_ms}ms)"
+                logger.info(f"Instant ETL created: {dag_id} in {etl_result.generation_time_ms}ms")
+            else:
+                message = f"즉시 생성 실패, source_manager DAG로 대체: {etl_result.error}"
+                logger.warning(f"Instant ETL failed, falling back: {etl_result.error}")
+
+                # 폴백: source_manager DAG 트리거
+                if request.auto_start:
+                    airflow = AirflowTrigger()
+                    await airflow.trigger_dag("source_manager", conf={"source_id": source_id, **source_data})
+
+        # 7. 기존 방식: source_manager DAG 트리거
+        elif request.auto_start:
+            airflow = AirflowTrigger()
+            trigger_conf = {
+                "source_id": source_id,
+                **source_data
+            }
+
+            trigger_result = await airflow.trigger_dag("source_manager", conf=trigger_conf)
+
+            if trigger_result["success"]:
+                dag_id = f"crawler_{source_id.replace('-', '_')}"
+                logger.info(f"Triggered source_manager DAG for {source_id}")
+            else:
+                logger.warning(f"DAG trigger failed: {trigger_result['message']}")
+
+            message = f"소스 '{source_name}' 등록 완료. 크롤러 코드가 자동 생성됩니다. (5-10분 소요)"
+
+        # 8. 응답 구성
+        return QuickAddResponse(
+            success=True,
+            source_id=source_id,
+            dag_id=dag_id,
+            message=message or f"소스 '{source_name}' 등록 완료.",
+            estimated_first_run=_calculate_first_run(schedule)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Create with custom fields failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"생성 실패: {str(e)}")
 
 
 @router.post("/batch", response_model=BatchAddResponse, status_code=201)

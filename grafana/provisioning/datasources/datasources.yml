@@ -1,0 +1,23 @@
+# Grafana Data Sources Provisioning
+apiVersion: 1
+
+datasources:
+  # Prometheus data source
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "15s"
+      httpMethod: POST
+
+  # MongoDB data source (optional, requires grafana-mongodb-datasource plugin)
+  # - name: MongoDB
+  #   type: grafana-mongodb-datasource
+  #   access: proxy
+  #   url: mongodb://mongodb:27017
+  #   database: crawler_system
+  #   isDefault: false
+  #   editable: true

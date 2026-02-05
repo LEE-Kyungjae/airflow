@@ -23,6 +23,19 @@ x-airflow-common:
     SMTP_USER: ${SMTP_USER}
     SMTP_PASSWORD: ${SMTP_PASSWORD}
     ALERT_EMAIL: ${ALERT_EMAIL}
+    PROMETHEUS_PUSHGATEWAY_URL: http://pushgateway:9091
+    # Backup configuration
+    BACKUP_DIR: /data/backups
+    BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    BACKUP_CLOUD_PROVIDER: ${BACKUP_CLOUD_PROVIDER:-local}
+    BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+    BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-mongodb-backups}
+    BACKUP_GCS_BUCKET: ${BACKUP_GCS_BUCKET:-}
+    BACKUP_GCS_PREFIX: ${BACKUP_GCS_PREFIX:-mongodb-backups}
+    BACKUP_COMPRESSION: ${BACKUP_COMPRESSION:-true}
+    BACKUP_VERIFY: ${BACKUP_VERIFY:-true}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       openai
       pymongo
@@ -34,12 +47,16 @@ x-airflow-common:
       openpyxl
       lxml
       httpx
+      boto3
+      google-cloud-storage
+      croniter
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/config:/opt/airflow/config
     - ./crawlers:/opt/airflow/crawlers
     - airflow-logs:/opt/airflow/logs
+    - backup-data:/data/backups
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -218,6 +235,17 @@ services:
       AIRFLOW_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       AIRFLOW_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PROMETHEUS_PUSHGATEWAY_URL: http://pushgateway:9091
+      # Backup configuration for API
+      BACKUP_DIR: /data/backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_CLOUD_PROVIDER: ${BACKUP_CLOUD_PROVIDER:-local}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_GCS_BUCKET: ${BACKUP_GCS_BUCKET:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - backup-data:/data/backups
     depends_on:
       - mongodb
       - airflow-webserver
@@ -248,10 +276,57 @@ services:
     networks:
       - crawler-network
 
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=15d'
+    restart: always
+    networks:
+      - crawler-network
+
+  # Pushgateway for batch job metrics
+  pushgateway:
+    image: prom/pushgateway:v1.6.2
+    ports:
+      - "9091:9091"
+    restart: always
+    networks:
+      - crawler-network
+
+  # Grafana for visualization (optional)
+  grafana:
+    image: grafana/grafana:10.2.2
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: always
+    networks:
+      - crawler-network
+
 volumes:
   postgres-db-volume:
   mongodb-data:
   airflow-logs:
+  prometheus-data:
+  grafana-data:
+  backup-data:
 
 networks:
   crawler-network:

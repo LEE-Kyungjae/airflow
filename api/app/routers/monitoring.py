@@ -7,7 +7,6 @@ Real-time Monitoring Router - 실시간 모니터링 API
 4. 알림 관리
 """
 
-import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Depends, WebSocket, WebSocketDisconnect
@@ -16,8 +15,10 @@ import asyncio
 import json
 
 from app.services.mongo_service import MongoService
+from app.services.alerts import AlertDispatcher, AlertSeverity
+from app.core import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 router = APIRouter()
 
 
@@ -529,6 +530,69 @@ async def test_webhook(
             'success': False,
             'error': str(e),
             'message': '웹훅 연결 실패'
+        }
+
+
+class TestAlertRequest(BaseModel):
+    """테스트 알림 요청"""
+    severity: str = Field("info", description="알림 심각도 (info, warning, error, critical)")
+    title: str = Field("테스트 알림", description="알림 제목")
+    message: str = Field("이것은 테스트 알림입니다.", description="알림 메시지")
+    source_id: Optional[str] = Field(None, description="소스 ID (선택)")
+
+
+@router.post("/alerts/test")
+async def send_test_alert(
+    request: TestAlertRequest,
+    mongo: MongoService = Depends(get_mongo)
+) -> Dict[str, Any]:
+    """
+    테스트 알림 발송
+
+    설정된 모든 알림 채널(Email, Slack, Discord, Webhook)로 테스트 알림을 발송합니다.
+    """
+    try:
+        # Map string severity to enum
+        severity_map = {
+            "info": AlertSeverity.INFO,
+            "warning": AlertSeverity.WARNING,
+            "error": AlertSeverity.ERROR,
+            "critical": AlertSeverity.CRITICAL,
+        }
+        severity = severity_map.get(request.severity.lower(), AlertSeverity.INFO)
+
+        # Create dispatcher with mongo for persistence
+        dispatcher = AlertDispatcher(mongo_service=mongo)
+
+        # Send test alert (skip throttle for tests)
+        result = await dispatcher.send_alert(
+            title=request.title,
+            message=request.message,
+            severity=severity,
+            source_id=request.source_id,
+            metadata={"test": True, "requested_at": datetime.utcnow().isoformat()},
+            skip_throttle=True,
+        )
+
+        logger.info(
+            "Test alert sent",
+            severity=request.severity,
+            result=result,
+        )
+
+        return {
+            "success": result.get("sent", False),
+            "channels": result.get("channels", {}),
+            "alert_id": result.get("alert_id"),
+            "message": "테스트 알림이 발송되었습니다." if result.get("sent") else "알림 발송에 실패했습니다. 환경 변수를 확인하세요."
+        }
+
+    except Exception as e:
+        logger.error("Test alert failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "알림 발송 중 오류가 발생했습니다."
         }
 
 

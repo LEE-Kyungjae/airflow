@@ -17,10 +17,16 @@ from ..models.schemas import (
     ReviewQueueItem,
     ReviewSessionStats,
     ReviewDashboardResponse,
-    PaginatedResponse
+    PaginatedResponse,
+    BulkApproveRequest,
+    BulkRejectRequest,
+    BulkFilterRequest,
+    BulkOperationResult,
+    BulkJobStatus
 )
 from ..services.mongo_service import get_db, MongoService
 from ..services.data_promotion import DataPromotionService
+from ..services.review_service import ReviewService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
@@ -31,6 +37,11 @@ def get_promotion_service(db) -> DataPromotionService:
     # For sync operations, we need the sync db
     mongo = MongoService()
     return DataPromotionService(mongo.db)
+
+
+def get_review_service(db) -> ReviewService:
+    """Get review service instance for bulk operations."""
+    return ReviewService(db)
 
 
 def serialize_doc(doc: dict) -> dict:
@@ -48,60 +59,98 @@ def serialize_doc(doc: dict) -> dict:
 
 @router.get("/dashboard", response_model=ReviewDashboardResponse)
 async def get_review_dashboard(db=Depends(get_db)):
-    """Get review dashboard statistics."""
+    """
+    Get review dashboard statistics.
+
+    N+1 최적화:
+    1. $facet을 사용하여 여러 count 쿼리를 단일 aggregation으로 병합
+    2. by_source 조회 시 $lookup으로 소스 이름을 조인 (개별 find_one 제거)
+    3. recent_reviews 조회 시 $lookup으로 소스 정보 포함
+
+    - 기존: 6개 count 쿼리 + N개 소스 조회 (N+1 패턴)
+    - 최적화 후: 2개 aggregation 쿼리
+    """
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Pending count
-    pending_count = await db.data_reviews.count_documents({"review_status": "pending"})
+    # 최적화: $facet으로 여러 통계를 단일 쿼리로 계산
+    stats_pipeline = [
+        {"$facet": {
+            "pending": [
+                {"$match": {"review_status": "pending"}},
+                {"$count": "count"}
+            ],
+            "today_reviewed": [
+                {"$match": {
+                    "reviewed_at": {"$gte": today_start},
+                    "review_status": {"$ne": "pending"}
+                }},
+                {"$count": "count"}
+            ],
+            "total_reviewed": [
+                {"$match": {"review_status": {"$ne": "pending"}}},
+                {"$count": "count"}
+            ],
+            "approved": [
+                {"$match": {"review_status": "approved"}},
+                {"$count": "count"}
+            ],
+            "needs_number_review": [
+                {"$match": {
+                    "needs_number_review": True,
+                    "review_status": "pending"
+                }},
+                {"$count": "count"}
+            ],
+            "avg_confidence": [
+                {"$match": {"confidence_score": {"$exists": True}}},
+                {"$group": {"_id": None, "avg": {"$avg": "$confidence_score"}}}
+            ],
+            # N+1 최적화: by_source에 $lookup으로 소스 이름 조인
+            "by_source": [
+                {"$match": {"review_status": "pending"}},
+                {"$group": {"_id": "$source_id", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 5},
+                {"$lookup": {
+                    "from": "sources",
+                    "localField": "_id",
+                    "foreignField": "_id",
+                    "pipeline": [{"$project": {"name": 1}}],
+                    "as": "source"
+                }},
+                {"$addFields": {
+                    "source_name": {"$ifNull": [{"$arrayElemAt": ["$source.name", 0]}, "Unknown"]}
+                }},
+                {"$project": {"source": 0}}
+            ]
+        }}
+    ]
 
-    # Today reviewed
-    today_reviewed = await db.data_reviews.count_documents({
-        "reviewed_at": {"$gte": today_start},
-        "review_status": {"$ne": "pending"}
-    })
+    stats_result = await db.data_reviews.aggregate(stats_pipeline).to_list(1)
+    stats = stats_result[0] if stats_result else {}
 
-    # Approval rate (last 7 days)
-    total_reviewed = await db.data_reviews.count_documents({
-        "review_status": {"$ne": "pending"}
-    })
-    approved = await db.data_reviews.count_documents({
-        "review_status": "approved"
-    })
+    # 결과 파싱
+    pending_count = stats.get("pending", [{}])[0].get("count", 0) if stats.get("pending") else 0
+    today_reviewed = stats.get("today_reviewed", [{}])[0].get("count", 0) if stats.get("today_reviewed") else 0
+    total_reviewed = stats.get("total_reviewed", [{}])[0].get("count", 0) if stats.get("total_reviewed") else 0
+    approved = stats.get("approved", [{}])[0].get("count", 0) if stats.get("approved") else 0
+    needs_number_review = stats.get("needs_number_review", [{}])[0].get("count", 0) if stats.get("needs_number_review") else 0
+    avg_confidence_result = stats.get("avg_confidence", [])
+    avg_confidence = avg_confidence_result[0]["avg"] if avg_confidence_result else 0
+
     approval_rate = (approved / total_reviewed * 100) if total_reviewed > 0 else 0
 
-    # Average confidence
-    pipeline = [
-        {"$match": {"confidence_score": {"$exists": True}}},
-        {"$group": {"_id": None, "avg": {"$avg": "$confidence_score"}}}
-    ]
-    result = await db.data_reviews.aggregate(pipeline).to_list(1)
-    avg_confidence = result[0]["avg"] if result else 0
-
-    # Needs number review
-    needs_number_review = await db.data_reviews.count_documents({
-        "needs_number_review": True,
-        "review_status": "pending"
-    })
-
-    # By source (top 5)
-    pipeline = [
-        {"$match": {"review_status": "pending"}},
-        {"$group": {"_id": "$source_id", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 5}
-    ]
-    by_source_raw = await db.data_reviews.aggregate(pipeline).to_list(5)
-
-    by_source = []
-    for item in by_source_raw:
-        source = await db.sources.find_one({"_id": ObjectId(item["_id"])})
-        by_source.append({
+    # by_source 결과 변환
+    by_source = [
+        {
             "source_id": str(item["_id"]),
-            "source_name": source["name"] if source else "Unknown",
+            "source_name": item["source_name"],
             "pending_count": item["count"]
-        })
+        }
+        for item in stats.get("by_source", [])
+    ]
 
-    # Recent reviews
+    # Recent reviews (별도 쿼리 - $facet 내 중첩 제한)
     recent = await db.data_reviews.find(
         {"review_status": {"$ne": "pending"}}
     ).sort("reviewed_at", -1).limit(10).to_list(10)
@@ -133,29 +182,57 @@ async def get_review_queue(
     1. needs_number_review (if priority_numbers is True)
     2. confidence_score (lower first)
     3. created_at (older first)
+
+    N+1 최적화: 리뷰 목록 조회 후 각 리뷰에 대해 개별 소스 조회하는 대신
+    $lookup을 사용하여 단일 aggregation으로 소스 정보를 조인
+
+    - 기존: 1개 find + N개 소스 조회 (N+1 패턴)
+    - 최적화 후: 1개 aggregation (소스 정보 $lookup 포함)
     """
-    query = {"review_status": status}
-
+    match_stage = {"review_status": status}
     if source_id:
-        query["source_id"] = ObjectId(source_id)
+        match_stage["source_id"] = ObjectId(source_id)
 
-    # Build sort order
-    sort_order = []
+    # Build sort order for aggregation
+    sort_stage = {}
     if priority_numbers:
-        sort_order.append(("needs_number_review", -1))
-    sort_order.extend([("confidence_score", 1), ("created_at", 1)])
+        sort_stage["needs_number_review"] = -1
+    sort_stage["confidence_score"] = 1
+    sort_stage["created_at"] = 1
 
-    total = await db.data_reviews.count_documents(query)
-    reviews = await db.data_reviews.find(query).sort(sort_order).skip(offset).limit(limit).to_list(limit)
+    # 최적화: $lookup으로 소스 정보 조인
+    pipeline = [
+        {"$match": match_stage},
+        {"$sort": sort_stage},
+        {"$skip": offset},
+        {"$limit": limit},
+        # N+1 최적화: 소스 정보를 $lookup으로 조인
+        {"$lookup": {
+            "from": "sources",
+            "localField": "source_id",
+            "foreignField": "_id",
+            "pipeline": [
+                {"$project": {"name": 1, "type": 1, "url": 1}}
+            ],
+            "as": "source_info"
+        }},
+        {"$addFields": {
+            "source_info": {"$arrayElemAt": ["$source_info", 0]}
+        }}
+    ]
+
+    # 총 개수 (별도 쿼리 - aggregation에서는 $count 사용 시 pagination 불가)
+    total = await db.data_reviews.count_documents(match_stage)
+    reviews = await db.data_reviews.aggregate(pipeline).to_list(limit)
 
     result = []
     for i, review in enumerate(reviews):
-        source = await db.sources.find_one({"_id": ObjectId(review["source_id"])})
+        source_info = review.pop("source_info", None) or {}
         result.append(ReviewQueueItem(
             review=serialize_doc(review),
-            source_name=source["name"] if source else "Unknown",
-            source_type=source["type"] if source else "unknown",
-            source_url=source["url"] if source else "",
+            source_name=source_info.get("name", "Unknown"),
+            source_type=source_info.get("type", "unknown"),
+            source_url=source_info.get("url", ""),
             total_in_queue=total,
             current_position=offset + i + 1
         ))
@@ -174,45 +251,115 @@ async def get_next_review(
     Get next/previous review item for continuous review workflow.
 
     Used for the 'next' and 'previous' buttons in the UI.
+
+    N+1 최적화: 리뷰 조회 후 소스 정보를 별도 조회하는 대신
+    $lookup을 사용하여 단일 aggregation으로 처리
+
+    - 기존: 1개 find + 1개 소스 조회 + 2개 count 쿼리
+    - 최적화 후: 1개 aggregation ($lookup + $facet으로 position 계산)
     """
-    query = {"review_status": "pending"}
+    match_stage = {"review_status": "pending"}
 
     if source_id:
-        query["source_id"] = ObjectId(source_id)
+        match_stage["source_id"] = ObjectId(source_id)
 
+    # 기본 pipeline 구성
     if current_id:
         current = await db.data_reviews.find_one({"_id": ObjectId(current_id)})
         if current:
             if direction == "forward":
-                query["created_at"] = {"$gt": current["created_at"]}
+                match_stage["created_at"] = {"$gt": current["created_at"]}
                 sort_dir = 1
             else:
-                query["created_at"] = {"$lt": current["created_at"]}
+                match_stage["created_at"] = {"$lt": current["created_at"]}
                 sort_dir = -1
 
-            review = await db.data_reviews.find(query).sort("created_at", sort_dir).limit(1).to_list(1)
+            # 최적화: 리뷰 + 소스 정보를 단일 aggregation으로 조회
+            pipeline = [
+                {"$match": match_stage},
+                {"$sort": {"created_at": sort_dir}},
+                {"$limit": 1},
+                {"$lookup": {
+                    "from": "sources",
+                    "localField": "source_id",
+                    "foreignField": "_id",
+                    "pipeline": [{"$project": {"name": 1, "type": 1, "url": 1}}],
+                    "as": "source_info"
+                }},
+                {"$addFields": {
+                    "source_info": {"$arrayElemAt": ["$source_info", 0]}
+                }}
+            ]
+
+            review = await db.data_reviews.aggregate(pipeline).to_list(1)
 
             if not review and direction == "backward":
                 # Going back to a completed one
-                back_query = {
+                back_match = {
                     "created_at": {"$lt": current["created_at"]},
                     "review_status": {"$ne": "pending"}
                 }
                 if source_id:
-                    back_query["source_id"] = ObjectId(source_id)
-                review = await db.data_reviews.find(back_query).sort("created_at", -1).limit(1).to_list(1)
+                    back_match["source_id"] = ObjectId(source_id)
+
+                back_pipeline = [
+                    {"$match": back_match},
+                    {"$sort": {"created_at": -1}},
+                    {"$limit": 1},
+                    {"$lookup": {
+                        "from": "sources",
+                        "localField": "source_id",
+                        "foreignField": "_id",
+                        "pipeline": [{"$project": {"name": 1, "type": 1, "url": 1}}],
+                        "as": "source_info"
+                    }},
+                    {"$addFields": {
+                        "source_info": {"$arrayElemAt": ["$source_info", 0]}
+                    }}
+                ]
+                review = await db.data_reviews.aggregate(back_pipeline).to_list(1)
         else:
-            review = await db.data_reviews.find(query).sort("created_at", 1).limit(1).to_list(1)
+            pipeline = [
+                {"$match": match_stage},
+                {"$sort": {"created_at": 1}},
+                {"$limit": 1},
+                {"$lookup": {
+                    "from": "sources",
+                    "localField": "source_id",
+                    "foreignField": "_id",
+                    "pipeline": [{"$project": {"name": 1, "type": 1, "url": 1}}],
+                    "as": "source_info"
+                }},
+                {"$addFields": {
+                    "source_info": {"$arrayElemAt": ["$source_info", 0]}
+                }}
+            ]
+            review = await db.data_reviews.aggregate(pipeline).to_list(1)
     else:
-        review = await db.data_reviews.find(query).sort("created_at", 1).limit(1).to_list(1)
+        pipeline = [
+            {"$match": match_stage},
+            {"$sort": {"created_at": 1}},
+            {"$limit": 1},
+            {"$lookup": {
+                "from": "sources",
+                "localField": "source_id",
+                "foreignField": "_id",
+                "pipeline": [{"$project": {"name": 1, "type": 1, "url": 1}}],
+                "as": "source_info"
+            }},
+            {"$addFields": {
+                "source_info": {"$arrayElemAt": ["$source_info", 0]}
+            }}
+        ]
+        review = await db.data_reviews.aggregate(pipeline).to_list(1)
 
     if not review:
         return {"has_next": False, "review": None}
 
     review = review[0]
-    source = await db.sources.find_one({"_id": ObjectId(review["source_id"])})
+    source_info = review.pop("source_info", None) or {}
 
-    # Get position info
+    # Get position info (count 쿼리는 유지 - 간단한 쿼리)
     total_pending = await db.data_reviews.count_documents({"review_status": "pending"})
     position_query = {"review_status": "pending", "created_at": {"$lte": review["created_at"]}}
     if source_id:
@@ -223,9 +370,9 @@ async def get_next_review(
         "has_next": True,
         "review": serialize_doc(review),
         "source": {
-            "name": source["name"] if source else "Unknown",
-            "type": source["type"] if source else "unknown",
-            "url": source["url"] if source else ""
+            "name": source_info.get("name", "Unknown"),
+            "type": source_info.get("type", "unknown"),
+            "url": source_info.get("url", "")
         },
         "position": position,
         "total_pending": total_pending
@@ -249,16 +396,53 @@ async def get_review_source_content(review_id: str, db=Depends(get_db)):
     Get source content for review (HTML, PDF, JSON, etc.)
 
     Returns the original source data with highlight information.
+
+    N+1 최적화: 3개의 순차적 find_one 쿼리를 단일 aggregation으로 병합
+    $lookup을 사용하여 review -> source -> crawl_result 조인
+
+    - 기존: 3개 순차 쿼리 (review, source, crawl_result)
+    - 최적화 후: 1개 aggregation ($lookup 2회)
     """
-    review = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
-    if not review:
+    # 최적화: 단일 aggregation으로 모든 관련 데이터 조회
+    pipeline = [
+        {"$match": {"_id": ObjectId(review_id)}},
+        # 소스 정보 조인
+        {"$lookup": {
+            "from": "sources",
+            "localField": "source_id",
+            "foreignField": "_id",
+            "pipeline": [
+                {"$project": {"name": 1, "type": 1, "url": 1, "fields": 1}}
+            ],
+            "as": "source"
+        }},
+        # 크롤 결과 조인
+        {"$lookup": {
+            "from": "crawl_results",
+            "localField": "crawl_result_id",
+            "foreignField": "_id",
+            "pipeline": [
+                {"$project": {"html_snapshot": 1, "data": 1}}
+            ],
+            "as": "crawl_result"
+        }},
+        {"$addFields": {
+            "source": {"$arrayElemAt": ["$source", 0]},
+            "crawl_result": {"$arrayElemAt": ["$crawl_result", 0]}
+        }}
+    ]
+
+    result = await db.data_reviews.aggregate(pipeline).to_list(1)
+
+    if not result:
         raise HTTPException(status_code=404, detail="Review not found")
 
-    source = await db.sources.find_one({"_id": ObjectId(review["source_id"])})
+    review = result[0]
+    source = review.get("source")
+    crawl_result = review.get("crawl_result")
+
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
-
-    crawl_result = await db.crawl_results.find_one({"_id": ObjectId(review["crawl_result_id"])})
 
     return {
         "source_type": source["type"],
@@ -488,3 +672,259 @@ async def create_reviews_from_crawl_result(
         "created_count": created_count,
         "total_records": len(data)
     }
+
+
+# ============================================================
+# Bulk Review Operations
+# ============================================================
+
+@router.post("/bulk-approve", response_model=BulkOperationResult)
+async def bulk_approve_reviews(
+    request: BulkApproveRequest,
+    reviewer_id: str = Query(..., description="Reviewer identifier"),
+    db=Depends(get_db)
+):
+    """
+    Bulk approve multiple review records.
+
+    Approves up to 100 review records at once and promotes their
+    data from staging to production. Each record must be in 'pending'
+    status to be approved.
+
+    Args:
+        request: Bulk approve request containing review IDs and optional comment
+        reviewer_id: Identifier of the reviewer performing the operation
+
+    Returns:
+        BulkOperationResult with success/failure counts and error details
+
+    Raises:
+        HTTPException: If no valid review IDs provided
+    """
+    if not request.review_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one review ID is required"
+        )
+
+    review_service = get_review_service(db)
+    result = await review_service.bulk_approve(request, reviewer_id)
+
+    logger.info(
+        f"Bulk approve by {reviewer_id}: "
+        f"{result.success}/{result.total} approved"
+    )
+
+    return result
+
+
+@router.post("/bulk-reject", response_model=BulkOperationResult)
+async def bulk_reject_reviews(
+    request: BulkRejectRequest,
+    reviewer_id: str = Query(..., description="Reviewer identifier"),
+    db=Depends(get_db)
+):
+    """
+    Bulk reject multiple review records.
+
+    Rejects up to 100 review records at once with a required reason.
+    Each record must be in 'pending' status to be rejected.
+
+    Args:
+        request: Bulk reject request containing review IDs, reason, and optional comment
+        reviewer_id: Identifier of the reviewer performing the operation
+
+    Returns:
+        BulkOperationResult with success/failure counts and error details
+
+    Raises:
+        HTTPException: If no valid review IDs provided
+    """
+    if not request.review_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one review ID is required"
+        )
+
+    review_service = get_review_service(db)
+    result = await review_service.bulk_reject(request, reviewer_id)
+
+    logger.info(
+        f"Bulk reject by {reviewer_id}: "
+        f"{result.success}/{result.total} rejected, reason: {request.reason}"
+    )
+
+    return result
+
+
+@router.post("/bulk-approve-by-filter", response_model=BulkOperationResult)
+async def bulk_approve_by_filter(
+    request: BulkFilterRequest,
+    reviewer_id: str = Query(..., description="Reviewer identifier"),
+    db=Depends(get_db)
+):
+    """
+    Bulk approve reviews matching filter criteria.
+
+    Finds all pending reviews matching the specified filters (source_id,
+    confidence threshold, date range) and approves them in batches.
+    Maximum 1000 records can be processed in a single request.
+
+    Args:
+        request: Filter criteria for selecting records to approve
+        reviewer_id: Identifier of the reviewer performing the operation
+
+    Returns:
+        BulkOperationResult with success/failure counts and error details
+
+    Example filters:
+        - source_id: Filter by specific source
+        - confidence_min: Only approve records with confidence >= threshold
+        - date_from/date_to: Filter by creation date range
+        - limit: Maximum number of records to process (default 100, max 1000)
+    """
+    review_service = get_review_service(db)
+
+    # Get count preview first
+    count = await review_service.get_review_count_by_filter(request)
+
+    if count == 0:
+        return BulkOperationResult(
+            total=0,
+            success=0,
+            failed=0,
+            failed_ids=[],
+            errors=["No pending reviews match the specified filters"]
+        )
+
+    result = await review_service.bulk_approve_by_filter(request, reviewer_id)
+
+    logger.info(
+        f"Bulk approve by filter by {reviewer_id}: "
+        f"{result.success}/{result.total} approved"
+    )
+
+    return result
+
+
+@router.get("/bulk-approve-by-filter/preview")
+async def preview_bulk_approve_by_filter(
+    source_id: Optional[str] = Query(None, description="Filter by source ID"),
+    confidence_min: Optional[float] = Query(None, ge=0, le=1, description="Minimum confidence score"),
+    date_from: Optional[datetime] = Query(None, description="Start date filter"),
+    date_to: Optional[datetime] = Query(None, description="End date filter"),
+    db=Depends(get_db)
+):
+    """
+    Preview count of reviews that would be approved by filter.
+
+    Use this endpoint to check how many records would be affected
+    before executing the bulk approve operation.
+
+    Args:
+        source_id: Optional source ID filter
+        confidence_min: Optional minimum confidence threshold
+        date_from: Optional start date
+        date_to: Optional end date
+
+    Returns:
+        Dictionary with count and sample records
+    """
+    review_service = get_review_service(db)
+
+    request = BulkFilterRequest(
+        source_id=source_id,
+        confidence_min=confidence_min,
+        date_from=date_from,
+        date_to=date_to,
+        limit=1000
+    )
+
+    count = await review_service.get_review_count_by_filter(request)
+
+    # Get sample records
+    query = {"review_status": "pending"}
+    if source_id:
+        query["source_id"] = ObjectId(source_id)
+    if confidence_min is not None:
+        query["confidence_score"] = {"$gte": confidence_min}
+    if date_from or date_to:
+        date_query = {}
+        if date_from:
+            date_query["$gte"] = date_from
+        if date_to:
+            date_query["$lte"] = date_to
+        query["created_at"] = date_query
+
+    samples = await db.data_reviews.find(query).limit(5).to_list(5)
+
+    return {
+        "matching_count": count,
+        "sample_records": [serialize_doc(s) for s in samples]
+    }
+
+
+@router.get("/bulk-jobs/{job_id}", response_model=BulkJobStatus)
+async def get_bulk_job_status(
+    job_id: str,
+    db=Depends(get_db)
+):
+    """
+    Get status of an async bulk operation job.
+
+    For large bulk operations that run asynchronously, this endpoint
+    allows tracking progress and retrieving final results.
+
+    Args:
+        job_id: The job ID returned when starting the bulk operation
+
+    Returns:
+        BulkJobStatus with current progress and results
+
+    Raises:
+        HTTPException: If job not found
+    """
+    review_service = get_review_service(db)
+    job_status = await review_service.get_bulk_job_status(job_id)
+
+    if not job_status:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Bulk job not found: {job_id}"
+        )
+
+    return job_status
+
+
+@router.get("/bulk-jobs")
+async def list_bulk_jobs(
+    status: Optional[str] = Query(
+        None,
+        pattern="^(pending|processing|completed|failed)$",
+        description="Filter by job status"
+    ),
+    limit: int = Query(20, ge=1, le=100, description="Maximum number of jobs to return"),
+    db=Depends(get_db)
+):
+    """
+    List recent bulk operation jobs.
+
+    Returns a list of bulk jobs with their status, useful for
+    monitoring ongoing operations and reviewing past results.
+
+    Args:
+        status: Optional filter by job status
+        limit: Maximum number of jobs to return (default 20, max 100)
+
+    Returns:
+        List of bulk job records
+    """
+    query = {}
+    if status:
+        query["status"] = status
+
+    jobs = await db.bulk_jobs.find(query).sort(
+        "started_at", -1
+    ).limit(limit).to_list(limit)
+
+    return [serialize_doc(j) for j in jobs]

@@ -7,4 +7,19 @@ try:
 except ImportError:
     auth = None
 
-__all__ = ['sources', 'crawlers', 'errors', 'dashboard', 'quick_add', 'monitoring', 'reviews', 'auth']
+try:
+    from . import auth_config
+except ImportError:
+    auth_config = None
+
+__all__ = [
+    'sources',
+    'crawlers',
+    'errors',
+    'dashboard',
+    'quick_add',
+    'monitoring',
+    'reviews',
+    'auth',
+    'auth_config'
+]

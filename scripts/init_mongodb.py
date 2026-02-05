@@ -61,6 +61,49 @@ def create_collections(db):
         'wellknown_cases': {},
         'healing_schedules': {},
 
+        # Authentication collections
+        'auth_configs': {
+            'validator': {
+                '$jsonSchema': {
+                    'bsonType': 'object',
+                    'required': ['source_id', 'auth_type'],
+                    'properties': {
+                        'auth_type': {'enum': ['form', 'oauth', 'api_key', 'cookie', 'basic', 'bearer', 'custom']},
+                        'session_duration_hours': {'bsonType': 'int', 'minimum': 1, 'maximum': 720},
+                        'auto_refresh': {'bsonType': 'bool'}
+                    }
+                }
+            }
+        },
+        'auth_credentials': {
+            'validator': {
+                '$jsonSchema': {
+                    'bsonType': 'object',
+                    'required': ['source_id', 'auth_type'],
+                    'properties': {
+                        'auth_type': {'enum': ['form', 'oauth', 'api_key', 'cookie', 'basic', 'bearer', 'custom']},
+                        'username': {'bsonType': 'string'},
+                        'password': {'bsonType': 'string'},  # Encrypted
+                        'api_key': {'bsonType': 'string'},   # Encrypted
+                        'oauth_token': {'bsonType': 'string'}  # Encrypted
+                    }
+                }
+            }
+        },
+        'auth_sessions': {
+            'validator': {
+                '$jsonSchema': {
+                    'bsonType': 'object',
+                    'required': ['source_id', 'is_valid'],
+                    'properties': {
+                        'is_valid': {'bsonType': 'bool'},
+                        'cookies': {'bsonType': 'object'},
+                        'expires_at': {'bsonType': 'string'}
+                    }
+                }
+            }
+        },
+
         # ETL data collections
         'news_articles': {},
         'financial_data': {},
@@ -140,6 +183,23 @@ def create_indexes(db):
         'healing_schedules': [
             ([('session_id', ASCENDING)], {}),
             ([('scheduled_at', ASCENDING)], {})
+        ],
+        # Authentication indexes
+        'auth_configs': [
+            ([('source_id', ASCENDING)], {'unique': True}),
+            ([('auth_type', ASCENDING)], {}),
+            ([('created_at', DESCENDING)], {})
+        ],
+        'auth_credentials': [
+            ([('source_id', ASCENDING)], {'unique': True}),
+            ([('auth_type', ASCENDING)], {}),
+            ([('created_at', DESCENDING)], {})
+        ],
+        'auth_sessions': [
+            ([('source_id', ASCENDING)], {'unique': True}),
+            ([('is_valid', ASCENDING)], {}),
+            ([('expires_at', ASCENDING)], {}),
+            ([('created_at', DESCENDING)], {})
         ],
         'news_articles': [
             ([('content_hash', ASCENDING)], {'unique': True, 'sparse': True}),
@@ -245,6 +305,8 @@ def main():
         print("     - sources, crawlers, crawl_results, crawler_history, error_logs")
         print("\n   Self-Healing Collections:")
         print("     - healing_sessions, wellknown_cases, healing_schedules")
+        print("\n   Authentication Collections:")
+        print("     - auth_configs, auth_credentials, auth_sessions")
         print("\n   ETL Data Collections:")
         print("     - news_articles, financial_data, stock_prices")
         print("     - exchange_rates, market_indices, announcements, crawl_data")

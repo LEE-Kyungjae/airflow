@@ -6,6 +6,7 @@ import {
   Activity,
   AlertTriangle,
   Settings,
+  ShieldCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -14,6 +15,7 @@ const navigation = [
   { name: 'Sources', href: '/sources', icon: Database },
   { name: 'Quick Add', href: '/quick-add', icon: PlusCircle },
   { name: 'Monitoring', href: '/monitoring', icon: Activity },
+  { name: 'Data Quality', href: '/data-quality', icon: ShieldCheck },
   { name: 'Errors', href: '/errors', icon: AlertTriangle },
 ]
 

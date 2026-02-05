@@ -25,18 +25,45 @@ def get_mongo():
 
 
 @router.get("", response_model=DashboardResponse)
-async def get_dashboard(mongo: MongoService = Depends(get_mongo)):
-    """Get dashboard overview data."""
-    stats = mongo.get_dashboard_stats()
+async def get_dashboard(
+    optimized: bool = Query(True, description="Use optimized aggregation queries"),
+    mongo: MongoService = Depends(get_mongo)
+):
+    """
+    Get dashboard overview data.
+
+    N+1 최적화: optimized=True (기본값) 시 $facet을 사용하여
+    여러 count 쿼리를 단일 aggregation으로 병합 처리
+    - 기존: 6개 개별 count 쿼리 + 1개 find 쿼리
+    - 최적화 후: 3개 aggregation 쿼리 (sources, crawlers, results 각각 $facet)
+    """
+    if optimized:
+        stats = mongo.get_dashboard_stats_optimized()
+    else:
+        stats = mongo.get_dashboard_stats()
     return stats
 
 
 @router.get("/recent-activity")
 async def get_recent_activity(
     hours: int = 24,
+    optimized: bool = Query(True, description="Use optimized aggregation with $lookup"),
     mongo: MongoService = Depends(get_mongo)
 ):
-    """Get recent system activity."""
+    """
+    Get recent system activity.
+
+    N+1 최적화: optimized=True (기본값) 시 $lookup을 사용하여
+    각 결과/에러/변경 레코드에 대해 소스 이름을 개별 조회하지 않고
+    aggregation pipeline에서 조인하여 처리
+
+    - 기존: 3개 find 쿼리 (소스 이름 없음, 또는 N개 추가 쿼리 필요)
+    - 최적화 후: 3개 aggregation 쿼리 ($lookup으로 소스 이름 포함)
+    """
+    if optimized:
+        return mongo.get_recent_activity_optimized(hours=hours)
+
+    # 기존 방식 (하위 호환성)
     cutoff = datetime.utcnow() - timedelta(hours=hours)
 
     # Recent crawl results
@@ -75,34 +102,62 @@ async def get_recent_activity(
 
 @router.get("/sources-status")
 async def get_sources_status(mongo: MongoService = Depends(get_mongo)):
-    """Get status overview of all sources."""
-    sources = mongo.list_sources(limit=500)
+    """
+    Get status overview of all sources.
+
+    N+1 최적화: aggregation pipeline을 사용하여
+    - 상태별 카운트를 $group으로 계산 (개별 count 쿼리 제거)
+    - 문제 있는 소스를 $match로 필터링 (메모리 내 반복 제거)
+    """
+    # 최적화: 상태별 카운트를 단일 aggregation으로 계산
+    status_pipeline = [
+        {'$group': {
+            '_id': '$status',
+            'count': {'$sum': 1}
+        }}
+    ]
+    status_results = list(mongo.db.sources.aggregate(status_pipeline))
 
     status_summary = {
         "active": 0,
         "inactive": 0,
         "error": 0
     }
+    total_sources = 0
+    for r in status_results:
+        status_key = r['_id'] or 'inactive'
+        status_summary[status_key] = status_summary.get(status_key, 0) + r['count']
+        total_sources += r['count']
 
-    sources_with_issues = []
+    # 최적화: 문제 있는 소스만 직접 쿼리 (전체 목록 조회 후 필터링 대신)
+    issues_pipeline = [
+        {'$match': {'error_count': {'$gt': 3}}},
+        {'$project': {
+            '_id': 1,
+            'name': 1,
+            'error_count': 1,
+            'last_run': 1,
+            'last_success': 1
+        }},
+        {'$sort': {'error_count': -1}},
+        {'$limit': 50}  # 문제 소스 수 제한
+    ]
+    sources_with_issues_raw = list(mongo.db.sources.aggregate(issues_pipeline))
 
-    for source in sources:
-        status = source.get('status', 'inactive')
-        status_summary[status] = status_summary.get(status, 0) + 1
-
-        # Flag sources with issues
-        if source.get('error_count', 0) > 3:
-            sources_with_issues.append({
-                "id": source['_id'],
-                "name": source['name'],
-                "error_count": source['error_count'],
-                "last_run": source.get('last_run'),
-                "last_success": source.get('last_success')
-            })
+    sources_with_issues = [
+        {
+            "id": str(s['_id']),
+            "name": s['name'],
+            "error_count": s['error_count'],
+            "last_run": s.get('last_run'),
+            "last_success": s.get('last_success')
+        }
+        for s in sources_with_issues_raw
+    ]
 
     return {
         "status_summary": status_summary,
-        "total_sources": len(sources),
+        "total_sources": total_sources,
         "sources_with_issues": sources_with_issues
     }
 

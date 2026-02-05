@@ -34,3 +34,19 @@ easyocr==1.7.1
 Pillow==10.2.0
 numpy>=1.24.0
 opencv-python-headless==4.9.0.80
+
+# Logging
+structlog>=24.1.0
+
+# Rate limiting
+slowapi>=0.1.9
+
+# Data export
+openpyxl>=3.1.0
+pandas>=2.0.0
+
+# Authentication and encryption
+cryptography>=42.0.0
+
+# Browser automation (for authenticated crawling)
+playwright>=1.41.0

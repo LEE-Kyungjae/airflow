@@ -1,25 +1,36 @@
 import { Routes, Route } from 'react-router-dom'
-import ReviewPage from './pages/ReviewPage'
-import DashboardPage from './pages/DashboardPage'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import Layout from './components/layout/Layout'
+import Dashboard from './pages/Dashboard'
+import Sources from './pages/Sources'
+import QuickAdd from './pages/QuickAdd'
+import Monitoring from './pages/Monitoring'
+import DataQuality from './pages/DataQuality'
+import Errors from './pages/Errors'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5000,
+      retry: 1,
+    },
+  },
+})
 
 function App() {
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>데이터 검토 시스템</h1>
-        <nav>
-          <a href="/">대시보드</a>
-          <a href="/review">검토하기</a>
-        </nav>
-      </header>
-      <main>
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/review" element={<ReviewPage />} />
-          <Route path="/review/:reviewId" element={<ReviewPage />} />
-        </Routes>
-      </main>
-    </div>
+    <QueryClientProvider client={queryClient}>
+      <Routes>
+        <Route path="/" element={<Layout />}>
+          <Route index element={<Dashboard />} />
+          <Route path="sources" element={<Sources />} />
+          <Route path="quick-add" element={<QuickAdd />} />
+          <Route path="monitoring" element={<Monitoring />} />
+          <Route path="data-quality" element={<DataQuality />} />
+          <Route path="errors" element={<Errors />} />
+        </Route>
+      </Routes>
+    </QueryClientProvider>
   )
 }
 
