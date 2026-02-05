@@ -17,7 +17,7 @@ email-validator==2.1.0
 python-dotenv==1.0.0
 
 # OpenAI (for direct API calls if needed)
-openai==1.10.0
+openai==2.17.0
 
 # Web scraping (for auto-discovery)
 beautifulsoup4==4.12.3
