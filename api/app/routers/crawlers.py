@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends, status
 
 from app.models.schemas import CrawlerResponse, CrawlerHistoryResponse
 from app.services.mongo_service import MongoService
+from app.auth.dependencies import require_auth, require_scope, AuthContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,7 +83,8 @@ async def list_crawlers(
         False,
         description="Include source info via $lookup aggregation (optimized)"
     ),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     List all crawlers with optional filtering.
@@ -116,7 +118,8 @@ async def list_crawlers(
 )
 async def get_crawler(
     crawler_id: str,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get a specific crawler by ID, including its code.
@@ -163,7 +166,8 @@ not the full crawler metadata.
 )
 async def get_crawler_code(
     crawler_id: str,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get just the crawler code.
@@ -215,7 +219,8 @@ async def get_crawler_history(
         le=100,
         description="Maximum number of history records (max 100)"
     ),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get version history for a crawler.
@@ -238,7 +243,8 @@ async def get_crawler_history(
 async def get_crawler_version(
     crawler_id: str,
     version: int,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get a specific version of crawler code.
@@ -262,7 +268,8 @@ async def get_crawler_version(
 async def rollback_crawler(
     crawler_id: str,
     version: int,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_scope("write")),
 ):
     """
     Rollback crawler to a previous version.

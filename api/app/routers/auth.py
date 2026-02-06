@@ -85,10 +85,15 @@ async def login(request: LoginRequest):
     """
     로그인하여 JWT 토큰 획득
 
-    개발 환경에서는 admin/admin123으로 로그인 가능
+    ADMIN_PASSWORD 환경 변수 설정 필요
     """
-    # 간단한 인증 (프로덕션에서는 DB 조회 및 비밀번호 해싱 필요)
-    admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+    admin_password = os.getenv("ADMIN_PASSWORD")
+    if not admin_password:
+        logger.error("ADMIN_PASSWORD 환경 변수가 설정되지 않았습니다")
+        raise HTTPException(
+            status_code=503,
+            detail="서버 인증 설정이 완료되지 않았습니다. 관리자에게 문의하세요."
+        )
 
     if request.username == "admin" and request.password == admin_password:
         access_token = JWTAuth.create_access_token(

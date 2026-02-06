@@ -27,6 +27,7 @@ from ..models.schemas import (
 from ..services.mongo_service import get_db, MongoService
 from ..services.data_promotion import DataPromotionService
 from ..services.review_service import ReviewService
+from app.auth.dependencies import require_auth, require_scope, require_admin, AuthContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
@@ -58,7 +59,7 @@ def serialize_doc(doc: dict) -> dict:
 
 
 @router.get("/dashboard", response_model=ReviewDashboardResponse)
-async def get_review_dashboard(db=Depends(get_db)):
+async def get_review_dashboard(db=Depends(get_db), auth: AuthContext = Depends(require_auth)):
     """
     Get review dashboard statistics.
 
@@ -173,7 +174,8 @@ async def get_review_queue(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     priority_numbers: bool = Query(False, description="Prioritize items needing number review"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     Get review queue items.
@@ -245,7 +247,8 @@ async def get_next_review(
     source_id: Optional[str] = None,
     current_id: Optional[str] = None,
     direction: str = Query("forward", pattern="^(forward|backward)$"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     Get next/previous review item for continuous review workflow.
@@ -380,7 +383,7 @@ async def get_next_review(
 
 
 @router.get("/{review_id}", response_model=DataReviewResponse)
-async def get_review(review_id: str, db=Depends(get_db)):
+async def get_review(review_id: str, db=Depends(get_db), auth: AuthContext = Depends(require_auth)):
     """Get a specific review by ID."""
     review = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
 
@@ -391,7 +394,7 @@ async def get_review(review_id: str, db=Depends(get_db)):
 
 
 @router.get("/{review_id}/source-content")
-async def get_review_source_content(review_id: str, db=Depends(get_db)):
+async def get_review_source_content(review_id: str, db=Depends(get_db), auth: AuthContext = Depends(require_auth)):
     """
     Get source content for review (HTML, PDF, JSON, etc.)
 
@@ -459,8 +462,8 @@ async def get_review_source_content(review_id: str, db=Depends(get_db)):
 async def update_review(
     review_id: str,
     update: ReviewStatusUpdate,
-    reviewer_id: str = Query(..., description="Reviewer identifier"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     Update review status.
@@ -471,6 +474,7 @@ async def update_review(
     - needs_correction: Data has errors, awaiting correction
     - corrected: Corrections have been made → promote with corrections
     """
+    reviewer_id = auth.user_id or "anonymous"
     review = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -558,10 +562,11 @@ async def update_review(
 @router.post("/batch-approve")
 async def batch_approve(
     review_ids: List[str],
-    reviewer_id: str = Query(..., description="Reviewer identifier"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """Batch approve multiple reviews."""
+    reviewer_id = auth.user_id or "anonymous"
     object_ids = [ObjectId(rid) for rid in review_ids]
 
     result = await db.data_reviews.update_many(
@@ -583,7 +588,7 @@ async def batch_approve(
 
 
 @router.get("/stats/by-source/{source_id}")
-async def get_source_review_stats(source_id: str, db=Depends(get_db)):
+async def get_source_review_stats(source_id: str, db=Depends(get_db), auth: AuthContext = Depends(require_auth)):
     """Get review statistics for a specific source."""
     pipeline = [
         {"$match": {"source_id": ObjectId(source_id)}},
@@ -614,7 +619,8 @@ async def get_source_review_stats(source_id: str, db=Depends(get_db)):
 @router.post("/create-from-crawl-result/{crawl_result_id}")
 async def create_reviews_from_crawl_result(
     crawl_result_id: str,
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     Create review records from a crawl result.
@@ -681,8 +687,8 @@ async def create_reviews_from_crawl_result(
 @router.post("/bulk-approve", response_model=BulkOperationResult)
 async def bulk_approve_reviews(
     request: BulkApproveRequest,
-    reviewer_id: str = Query(..., description="Reviewer identifier"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     Bulk approve multiple review records.
@@ -691,16 +697,13 @@ async def bulk_approve_reviews(
     data from staging to production. Each record must be in 'pending'
     status to be approved.
 
-    Args:
-        request: Bulk approve request containing review IDs and optional comment
-        reviewer_id: Identifier of the reviewer performing the operation
-
     Returns:
         BulkOperationResult with success/failure counts and error details
 
     Raises:
         HTTPException: If no valid review IDs provided
     """
+    reviewer_id = auth.user_id or "anonymous"
     if not request.review_ids:
         raise HTTPException(
             status_code=400,
@@ -721,8 +724,8 @@ async def bulk_approve_reviews(
 @router.post("/bulk-reject", response_model=BulkOperationResult)
 async def bulk_reject_reviews(
     request: BulkRejectRequest,
-    reviewer_id: str = Query(..., description="Reviewer identifier"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     Bulk reject multiple review records.
@@ -730,16 +733,13 @@ async def bulk_reject_reviews(
     Rejects up to 100 review records at once with a required reason.
     Each record must be in 'pending' status to be rejected.
 
-    Args:
-        request: Bulk reject request containing review IDs, reason, and optional comment
-        reviewer_id: Identifier of the reviewer performing the operation
-
     Returns:
         BulkOperationResult with success/failure counts and error details
 
     Raises:
         HTTPException: If no valid review IDs provided
     """
+    reviewer_id = auth.user_id or "anonymous"
     if not request.review_ids:
         raise HTTPException(
             status_code=400,
@@ -760,8 +760,8 @@ async def bulk_reject_reviews(
 @router.post("/bulk-approve-by-filter", response_model=BulkOperationResult)
 async def bulk_approve_by_filter(
     request: BulkFilterRequest,
-    reviewer_id: str = Query(..., description="Reviewer identifier"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     Bulk approve reviews matching filter criteria.
@@ -769,10 +769,6 @@ async def bulk_approve_by_filter(
     Finds all pending reviews matching the specified filters (source_id,
     confidence threshold, date range) and approves them in batches.
     Maximum 1000 records can be processed in a single request.
-
-    Args:
-        request: Filter criteria for selecting records to approve
-        reviewer_id: Identifier of the reviewer performing the operation
 
     Returns:
         BulkOperationResult with success/failure counts and error details
@@ -783,6 +779,7 @@ async def bulk_approve_by_filter(
         - date_from/date_to: Filter by creation date range
         - limit: Maximum number of records to process (default 100, max 1000)
     """
+    reviewer_id = auth.user_id or "anonymous"
     review_service = get_review_service(db)
 
     # Get count preview first
@@ -813,7 +810,8 @@ async def preview_bulk_approve_by_filter(
     confidence_min: Optional[float] = Query(None, ge=0, le=1, description="Minimum confidence score"),
     date_from: Optional[datetime] = Query(None, description="Start date filter"),
     date_to: Optional[datetime] = Query(None, description="End date filter"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     Preview count of reviews that would be approved by filter.
@@ -867,7 +865,8 @@ async def preview_bulk_approve_by_filter(
 @router.get("/bulk-jobs/{job_id}", response_model=BulkJobStatus)
 async def get_bulk_job_status(
     job_id: str,
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     Get status of an async bulk operation job.
@@ -904,7 +903,8 @@ async def list_bulk_jobs(
         description="Filter by job status"
     ),
     limit: int = Query(20, ge=1, le=100, description="Maximum number of jobs to return"),
-    db=Depends(get_db)
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     List recent bulk operation jobs.

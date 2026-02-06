@@ -19,6 +19,7 @@ from app.services.lineage import (
     ImpactAnalyzer,
 )
 from app.core import get_logger
+from app.auth.dependencies import require_auth, require_scope, require_admin, AuthContext
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -83,7 +84,8 @@ async def list_nodes(
     source_id: Optional[str] = Query(None, description="소스 ID 필터"),
     name_pattern: Optional[str] = Query(None, description="이름 패턴 (정규식)"),
     limit: int = Query(100, ge=1, le=500),
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     리니지 노드 목록 조회
@@ -106,7 +108,8 @@ async def list_nodes(
 @router.get("/nodes/{node_id}")
 async def get_node(
     node_id: str,
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     단일 노드 조회
@@ -121,7 +124,8 @@ async def get_node(
 @router.post("/nodes")
 async def create_node(
     request: NodeCreateRequest,
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     리니지 노드 생성
@@ -159,7 +163,8 @@ async def create_node(
 @router.post("/edges")
 async def create_edge(
     request: EdgeCreateRequest,
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     리니지 엣지 생성
@@ -202,7 +207,8 @@ async def create_edge(
 async def get_upstream_lineage(
     node_id: str,
     depth: int = Query(10, ge=1, le=50, description="최대 탐색 깊이"),
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     업스트림 (상위) 리니지 조회
@@ -234,7 +240,8 @@ async def get_upstream_lineage(
 async def get_downstream_lineage(
     node_id: str,
     depth: int = Query(10, ge=1, le=50, description="최대 탐색 깊이"),
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     다운스트림 (하위) 리니지 조회
@@ -267,7 +274,8 @@ async def get_full_lineage(
     node_id: str,
     upstream_depth: int = Query(10, ge=1, le=50),
     downstream_depth: int = Query(10, ge=1, le=50),
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     전체 리니지 조회 (업스트림 + 다운스트림)
@@ -282,7 +290,8 @@ async def get_full_lineage(
 @router.get("/sources/{source_id}/lineage")
 async def get_source_lineage(
     source_id: str,
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     소스별 리니지 조회
@@ -293,7 +302,8 @@ async def get_source_lineage(
 @router.get("/runs/{run_id}/lineage")
 async def get_run_lineage(
     run_id: str,
-    tracker: LineageTracker = Depends(get_tracker)
+    tracker: LineageTracker = Depends(get_tracker),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     실행별 리니지 조회
@@ -309,7 +319,8 @@ async def get_run_lineage(
 @router.post("/impact/analyze")
 async def analyze_impact(
     request: ImpactAnalysisRequest,
-    analyzer: ImpactAnalyzer = Depends(get_analyzer)
+    analyzer: ImpactAnalyzer = Depends(get_analyzer),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     영향 분석 실행
@@ -345,7 +356,8 @@ async def analyze_impact(
 @router.get("/nodes/{node_id}/dependencies")
 async def get_dependencies(
     node_id: str,
-    analyzer: ImpactAnalyzer = Depends(get_analyzer)
+    analyzer: ImpactAnalyzer = Depends(get_analyzer),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     노드 의존성 보고서
@@ -356,7 +368,8 @@ async def get_dependencies(
 @router.get("/sources/{source_id}/data-flow")
 async def get_data_flow(
     source_id: str,
-    analyzer: ImpactAnalyzer = Depends(get_analyzer)
+    analyzer: ImpactAnalyzer = Depends(get_analyzer),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     소스별 데이터 흐름 보고서
@@ -369,7 +382,8 @@ async def get_data_flow(
 @router.get("/statistics")
 async def get_lineage_statistics(
     tracker: LineageTracker = Depends(get_tracker),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     리니지 통계

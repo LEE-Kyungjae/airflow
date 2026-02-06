@@ -31,6 +31,7 @@ from app.models.backup_schemas import (
 )
 from app.services.airflow_trigger import AirflowTrigger
 from app.services.mongo_service import MongoService
+from app.auth.dependencies import require_admin, AuthContext
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ async def trigger_backup(
         default=None,
         description="Collections to backup (required if backup_type is 'collection')"
     ),
+    auth: AuthContext = Depends(require_admin),
 ) -> BackupJobResponse:
     """
     Trigger a manual backup job.
@@ -235,6 +237,7 @@ async def trigger_backup(
 )
 async def trigger_restore(
     request: RestoreTriggerRequest,
+    auth: AuthContext = Depends(require_admin),
 ) -> RestoreJobResponse:
     """
     Trigger a database restore from backup.
@@ -358,6 +361,7 @@ async def list_backups(
     ),
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
+    auth: AuthContext = Depends(require_admin),
 ) -> BackupListResponse:
     """
     List available backups with optional filtering.
@@ -428,7 +432,7 @@ async def list_backups(
         500: {"description": "Failed to get status"},
     }
 )
-async def get_backup_status(backup_id: str) -> BackupStatus:
+async def get_backup_status(backup_id: str, auth: AuthContext = Depends(require_admin)) -> BackupStatus:
     """
     Get status of a backup job by ID.
     """
@@ -485,7 +489,7 @@ async def get_backup_status(backup_id: str) -> BackupStatus:
         500: {"description": "Failed to get statistics"},
     }
 )
-async def get_backup_stats() -> BackupStatsResponse:
+async def get_backup_stats(auth: AuthContext = Depends(require_admin)) -> BackupStatsResponse:
     """
     Get backup statistics including counts, sizes, and success rates.
     """
@@ -560,7 +564,7 @@ async def get_backup_stats() -> BackupStatsResponse:
         400: {"description": "Backup not available for download"},
     }
 )
-async def download_backup(backup_id: str) -> FileResponse:
+async def download_backup(backup_id: str, auth: AuthContext = Depends(require_admin)) -> FileResponse:
     """
     Download a backup file by ID.
 
@@ -623,7 +627,8 @@ async def delete_backup(
     delete_from_cloud: bool = Query(
         default=True,
         description="Also delete from cloud storage if applicable"
-    )
+    ),
+    auth: AuthContext = Depends(require_admin),
 ) -> BackupDeleteResponse:
     """
     Delete a backup by ID.
@@ -724,7 +729,7 @@ async def delete_backup(
         500: {"description": "Failed to get configuration"},
     }
 )
-async def get_backup_config_endpoint() -> BackupConfigResponse:
+async def get_backup_config_endpoint(auth: AuthContext = Depends(require_admin)) -> BackupConfigResponse:
     """
     Get current backup configuration.
     """
@@ -777,6 +782,7 @@ async def get_backup_config_endpoint() -> BackupConfigResponse:
 )
 async def update_backup_config(
     config_update: BackupConfigUpdate,
+    auth: AuthContext = Depends(require_admin),
 ) -> BackupConfigResponse:
     """
     Update backup configuration.
@@ -838,7 +844,8 @@ async def trigger_cleanup(
         ge=1,
         le=365,
         description="Override retention days for this cleanup"
-    )
+    ),
+    auth: AuthContext = Depends(require_admin),
 ) -> dict:
     """
     Trigger manual cleanup of old backups.
@@ -886,7 +893,7 @@ async def trigger_cleanup(
         500: {"description": "Verification failed"},
     }
 )
-async def verify_backup_integrity(backup_id: str) -> dict:
+async def verify_backup_integrity(backup_id: str, auth: AuthContext = Depends(require_admin)) -> dict:
     """
     Verify backup integrity by checking checksum and archive contents.
     """

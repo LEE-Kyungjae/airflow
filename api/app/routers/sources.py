@@ -189,7 +189,8 @@ async def list_sources(
         False,
         description="Include active crawler info via $lookup aggregation (optimized)"
     ),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     List all sources with optional filtering.
@@ -215,7 +216,8 @@ async def list_sources(
 )
 async def get_source(
     source_id: str,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     Get a specific source by ID.
@@ -450,7 +452,8 @@ async def get_source_results(
         le=100,
         description="Maximum number of results to return (max 100)"
     ),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     Get crawl results for a source.

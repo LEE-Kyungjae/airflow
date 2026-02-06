@@ -20,6 +20,7 @@ from app.services.auto_discovery import AutoDiscoveryService, BatchDiscoveryServ
 from app.services.airflow_trigger import AirflowTrigger
 from app.services.test_crawler import TestCrawlerService
 from app.services.instant_etl import InstantETLService
+from app.auth.dependencies import require_auth, require_scope, require_admin, AuthContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -176,7 +177,8 @@ def get_mongo():
 @router.post("/analyze", response_model=DiscoveryResponse)
 async def analyze_url(
     request: AnalyzeRequest,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ):
     """
     URL 자동 분석 (등록 없이)
@@ -222,7 +224,7 @@ async def analyze_url(
 
 
 @router.post("/test", response_model=TestCrawlResponse)
-async def test_crawl(request: TestCrawlRequest):
+async def test_crawl(request: TestCrawlRequest, auth: AuthContext = Depends(require_scope("write"))):
     """
     테스트 크롤링 - 저장 없이 실제 데이터 추출
 
@@ -264,7 +266,8 @@ async def test_crawl(request: TestCrawlRequest):
 async def quick_add_source(
     request: QuickAddRequest,
     background_tasks: BackgroundTasks,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     원클릭 소스 등록
@@ -399,7 +402,8 @@ async def quick_add_source(
 async def create_with_custom_fields(
     request: CreateRequest,
     background_tasks: BackgroundTasks,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     커스텀 필드로 ETL 생성
@@ -553,7 +557,8 @@ async def create_with_custom_fields(
 async def batch_add_sources(
     request: BatchAddRequest,
     background_tasks: BackgroundTasks,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     배치 소스 등록
@@ -643,7 +648,7 @@ async def batch_add_sources(
 
 
 @router.get("/templates")
-async def get_source_templates():
+async def get_source_templates(auth: AuthContext = Depends(require_auth)):
     """
     소스 템플릿 목록
 
@@ -700,7 +705,8 @@ async def add_from_template(
     template_id: str,
     url: str = Query(..., description="실제 URL"),
     name: Optional[str] = None,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """
     템플릿 기반 소스 등록

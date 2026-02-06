@@ -52,7 +52,7 @@ class AuthMode:
     # "required": 모든 요청에 인증 필요
     # "optional": 인증 선택 (일부 엔드포인트만 필요)
     # "disabled": 인증 비활성화 (개발용)
-    MODE = os.getenv("AUTH_MODE", "optional")
+    MODE = os.getenv("AUTH_MODE", "required")
 
     # 인증 제외 경로 (항상 인증 없이 접근 가능)
     EXEMPT_PATHS = [
@@ -128,11 +128,19 @@ async def require_auth(
     if AuthMode.is_exempt(request.url.path):
         return auth_context
 
-    # 인증 모드가 disabled면 통과
+    # 인증 모드가 disabled면 개발 환경에서만 통과
     if AuthMode.MODE == "disabled":
+        env = os.getenv("ENV", "production")
+        if env == "production":
+            logger.error("AUTH_MODE=disabled is not allowed in production")
+            raise HTTPException(
+                status_code=500,
+                detail="AUTH_MODE=disabled는 프로덕션 환경에서 사용할 수 없습니다"
+            )
+        logger.warning("AUTH_MODE=disabled: 인증 우회 (개발 환경)")
         return AuthContext(
             auth_type="none",
-            role="admin",  # 개발용으로 모든 권한 부여
+            role="admin",
             scopes=["admin", "read", "write", "delete"]
         )
 

@@ -7,8 +7,11 @@ Real-time Monitoring Router - 실시간 모니터링 API
 4. 알림 관리
 """
 
+import ipaddress
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, HTTPException, Query, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 import asyncio
@@ -16,6 +19,7 @@ import json
 
 from app.services.mongo_service import MongoService
 from app.services.alerts import AlertDispatcher, AlertSeverity
+from app.auth.dependencies import require_auth, require_scope, require_admin, AuthContext
 from app.core import get_logger
 
 logger = get_logger(__name__)
@@ -135,7 +139,8 @@ manager = ConnectionManager()
 
 @router.get("/status/realtime")
 async def get_realtime_status(
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     실시간 파이프라인 상태
@@ -207,7 +212,8 @@ async def get_realtime_status(
 @router.get("/errors/summary")
 async def get_error_summary(
     hours: int = Query(24, ge=1, le=168, description="조회 기간 (시간)"),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     에러 요약
@@ -275,7 +281,8 @@ async def get_error_summary(
 async def get_healing_sessions(
     status: Optional[str] = Query(None, description="상태 필터"),
     limit: int = Query(50, ge=1, le=200),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     자가 치유 세션 목록
@@ -323,7 +330,8 @@ async def get_healing_sessions(
 async def admin_approve_healing(
     session_id: str,
     additional_attempts: int = Query(3, ge=1, le=10),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_admin)
 ) -> Dict[str, Any]:
     """
     관리자 승인 - 추가 치유 시도 허용
@@ -357,7 +365,8 @@ async def admin_approve_healing(
 
 @router.get("/health")
 async def get_system_health(
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ) -> SystemHealth:
     """
     시스템 헬스 체크
@@ -435,7 +444,8 @@ async def get_system_health(
 @router.get("/wellknown-cases")
 async def get_wellknown_cases(
     limit: int = Query(50, ge=1, le=200),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ) -> Dict[str, Any]:
     """
     Wellknown Case 목록
@@ -494,15 +504,58 @@ async def websocket_live_updates(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+def _validate_webhook_url(url: str) -> str:
+    """Validate webhook URL to prevent SSRF attacks."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise HTTPException(400, "유효하지 않은 URL입니다")
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "HTTP/HTTPS URL만 허용됩니다")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(400, "호스트명이 없는 URL입니다")
+
+    # Block obvious internal hostnames
+    blocked_hosts = {
+        "localhost", "127.0.0.1", "0.0.0.0", "::1",
+        "metadata.google.internal", "169.254.169.254",
+    }
+    if hostname.lower() in blocked_hosts:
+        raise HTTPException(400, "내부 네트워크 URL은 허용되지 않습니다")
+
+    # Block private/reserved IP ranges
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise HTTPException(400, "내부 네트워크 IP는 허용되지 않습니다")
+    except ValueError:
+        # hostname is a domain name, check for internal Docker service names
+        internal_services = {
+            "mongodb", "postgres", "airflow-webserver", "airflow-scheduler",
+            "airflow-triggerer", "selenium-hub", "chrome", "prometheus",
+            "pushgateway", "grafana", "api",
+        }
+        if hostname.lower() in internal_services:
+            raise HTTPException(400, "내부 서비스 URL은 허용되지 않습니다")
+
+    return url
+
+
 @router.post("/alerts/webhook-test")
 async def test_webhook(
     webhook_url: str,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_admin)
 ) -> Dict[str, Any]:
     """
-    웹훅 테스트
+    웹훅 테스트 (관리자 전용)
     """
     import httpx
+
+    validated_url = _validate_webhook_url(webhook_url)
 
     test_payload = {
         'type': 'test',
@@ -514,7 +567,7 @@ async def test_webhook(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                webhook_url,
+                validated_url,
                 json=test_payload,
                 timeout=10.0
             )
@@ -525,10 +578,9 @@ async def test_webhook(
                 'message': '웹훅 테스트 완료'
             }
 
-    except Exception as e:
+    except Exception:
         return {
             'success': False,
-            'error': str(e),
             'message': '웹훅 연결 실패'
         }
 
@@ -544,7 +596,8 @@ class TestAlertRequest(BaseModel):
 @router.post("/alerts/test")
 async def send_test_alert(
     request: TestAlertRequest,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_admin)
 ) -> Dict[str, Any]:
     """
     테스트 알림 발송

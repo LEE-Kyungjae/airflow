@@ -6,17 +6,17 @@ x-airflow-common:
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres/${POSTGRES_DB:-airflow}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'false'
     AIRFLOW__WEBSERVER__RBAC: 'true'
     # Custom environment variables
     OPENAI_API_KEY: ${OPENAI_API_KEY}
-    MONGODB_URI: mongodb://mongodb:27017
+    MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-crawlerAdmin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
     MONGODB_DATABASE: crawler_system
     SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
     SMTP_PORT: ${SMTP_PORT:-587}
@@ -69,9 +69,9 @@ services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
@@ -87,8 +87,8 @@ services:
     image: mongo:7.0
     environment:
       MONGO_INITDB_DATABASE: crawler_system
-    ports:
-      - "27017:27017"
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-crawlerAdmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD must be set}
     volumes:
       - mongodb-data:/data/db
       - ./mongodb/init-scripts:/docker-entrypoint-initdb.d:ro
@@ -229,7 +229,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      MONGODB_URI: mongodb://mongodb:27017
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-crawlerAdmin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
       MONGODB_DATABASE: crawler_system
       AIRFLOW_BASE_URL: http://airflow-webserver:8080
       AIRFLOW_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
@@ -253,13 +253,9 @@ services:
     networks:
       - crawler-network
 
-  # Selenium Grid for dynamic page crawling
+  # Selenium Grid for dynamic page crawling (internal only)
   selenium-hub:
     image: selenium/hub:4.16.1
-    ports:
-      - "4442:4442"
-      - "4443:4443"
-      - "4444:4444"
     networks:
       - crawler-network
 
@@ -293,11 +289,9 @@ services:
     networks:
       - crawler-network
 
-  # Pushgateway for batch job metrics
+  # Pushgateway for batch job metrics (internal only)
   pushgateway:
     image: prom/pushgateway:v1.6.2
-    ports:
-      - "9091:9091"
     restart: always
     networks:
       - crawler-network

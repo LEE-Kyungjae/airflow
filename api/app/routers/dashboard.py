@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from app.models.schemas import DashboardResponse
 from app.services.mongo_service import MongoService
 from app.services.airflow_trigger import AirflowTrigger
+from app.auth.dependencies import require_auth, AuthContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,7 +28,8 @@ def get_mongo():
 @router.get("", response_model=DashboardResponse)
 async def get_dashboard(
     optimized: bool = Query(True, description="Use optimized aggregation queries"),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get dashboard overview data.
@@ -48,7 +50,8 @@ async def get_dashboard(
 async def get_recent_activity(
     hours: int = 24,
     optimized: bool = Query(True, description="Use optimized aggregation with $lookup"),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get recent system activity.
@@ -101,7 +104,7 @@ async def get_recent_activity(
 
 
 @router.get("/sources-status")
-async def get_sources_status(mongo: MongoService = Depends(get_mongo)):
+async def get_sources_status(mongo: MongoService = Depends(get_mongo), auth: AuthContext = Depends(require_auth)):
     """
     Get status overview of all sources.
 
@@ -165,7 +168,8 @@ async def get_sources_status(mongo: MongoService = Depends(get_mongo)):
 @router.get("/execution-trends")
 async def get_execution_trends(
     days: int = 7,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ):
     """Get execution trends over time."""
     cutoff = datetime.utcnow() - timedelta(days=days)
@@ -212,7 +216,7 @@ async def get_execution_trends(
 
 
 @router.get("/system-health")
-async def get_system_health(mongo: MongoService = Depends(get_mongo)):
+async def get_system_health(mongo: MongoService = Depends(get_mongo), auth: AuthContext = Depends(require_auth)):
     """Get overall system health indicators."""
     # MongoDB health
     try:

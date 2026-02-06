@@ -25,6 +25,7 @@ from ..models.export_schemas import (
     ExportJobResponse,
     ExportJobStatus
 )
+from app.auth.dependencies import require_auth, require_scope, AuthContext
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,8 @@ async def export_csv(
         regex="^(utf-8|utf-8-sig|euc-kr|cp949)$",
         description="Character encoding"
     ),
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Stream CSV export of collection data.
@@ -227,7 +229,8 @@ async def export_excel(
         max_length=31,
         description="Excel worksheet name"
     ),
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Generate and download Excel file.
@@ -318,7 +321,8 @@ async def export_excel(
 async def create_async_export(
     request: ExportRequest,
     background_tasks: BackgroundTasks,
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_scope("write")),
 ):
     """
     Create an asynchronous export job.
@@ -385,7 +389,8 @@ async def create_async_export(
 )
 async def get_export_job_status(
     job_id: str,
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Get status of an async export job.
@@ -437,7 +442,8 @@ async def get_export_job_status(
 )
 async def download_export_file(
     job_id: str,
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Download a completed export file.
@@ -531,7 +537,8 @@ async def export_crawl_results(
         description="Maximum records"
     ),
     mongo: MongoService = Depends(get_mongo_service),
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Export crawl results for a specific source.
@@ -683,7 +690,8 @@ async def export_reviews(
         le=100000,
         description="Maximum records"
     ),
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     Export review data with various filter options.
@@ -762,7 +770,8 @@ async def list_export_jobs(
     ),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(20, ge=1, le=100, description="Maximum records to return"),
-    mongo: MongoService = Depends(get_mongo_service)
+    mongo: MongoService = Depends(get_mongo_service),
+    auth: AuthContext = Depends(require_auth),
 ):
     """
     List export jobs with optional status filter.
@@ -801,7 +810,8 @@ async def list_export_jobs(
 )
 async def cancel_export_job(
     job_id: str,
-    mongo: MongoService = Depends(get_mongo_service)
+    mongo: MongoService = Depends(get_mongo_service),
+    auth: AuthContext = Depends(require_scope("write")),
 ):
     """
     Cancel an export job.
@@ -839,7 +849,8 @@ async def cancel_export_job(
     }
 )
 async def cleanup_exports(
-    export_service: ExportService = Depends(get_export_service)
+    export_service: ExportService = Depends(get_export_service),
+    auth: AuthContext = Depends(require_scope("write")),
 ):
     """
     Manually trigger cleanup of expired export files.

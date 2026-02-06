@@ -30,6 +30,7 @@ from app.services.data_quality import (
 from app.services.data_quality.report import QualityReportGenerator
 from app.services.alerts import AlertDispatcher
 from app.core import get_logger
+from app.auth.dependencies import require_auth, require_scope, AuthContext
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -96,7 +97,8 @@ async def list_validation_results(
     has_issues: Optional[bool] = Query(None, description="이슈 존재 여부"),
     days: int = Query(7, ge=1, le=90, description="조회 기간 (일)"),
     limit: int = Query(50, ge=1, le=200),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     검증 결과 목록 조회
@@ -171,7 +173,8 @@ async def list_validation_results(
 @router.get("/validation-results/{result_id}")
 async def get_validation_result(
     result_id: str,
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """검증 결과 상세 조회"""
     from bson import ObjectId
@@ -200,7 +203,8 @@ async def get_validation_result(
 async def get_quality_trend(
     source_id: str,
     days: int = Query(30, ge=1, le=90, description="조회 기간 (일)"),
-    monitor: DataQualityMonitor = Depends(get_quality_monitor)
+    monitor: DataQualityMonitor = Depends(get_quality_monitor),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     소스별 품질 트렌드 조회
@@ -235,7 +239,8 @@ async def list_anomalies(
     severity: Optional[str] = Query(None, description="심각도 필터"),
     acknowledged: Optional[bool] = Query(None, description="확인 여부"),
     hours: int = Query(24, ge=1, le=168, description="조회 기간 (시간)"),
-    monitor: DataQualityMonitor = Depends(get_quality_monitor)
+    monitor: DataQualityMonitor = Depends(get_quality_monitor),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     이상 감지 목록 조회
@@ -265,7 +270,8 @@ async def list_anomalies(
 @router.post("/anomalies/{anomaly_id}/acknowledge")
 async def acknowledge_anomaly(
     anomaly_id: str,
-    monitor: DataQualityMonitor = Depends(get_quality_monitor)
+    monitor: DataQualityMonitor = Depends(get_quality_monitor),
+    auth: AuthContext = Depends(require_scope("write")),
 ) -> Dict[str, Any]:
     """이상 감지 확인 처리"""
     success = await monitor.acknowledge_anomaly(anomaly_id)
@@ -280,7 +286,8 @@ async def acknowledge_anomaly(
 async def get_quality_report(
     source_id: str,
     days: int = Query(7, ge=1, le=30, description="리포트 기간 (일)"),
-    generator: QualityReportGenerator = Depends(get_report_generator)
+    generator: QualityReportGenerator = Depends(get_report_generator),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     종합 품질 리포트 생성
@@ -304,7 +311,8 @@ async def get_quality_report(
 async def validate_data(
     request: ValidationRequest,
     mongo: MongoService = Depends(get_mongo),
-    monitor: DataQualityMonitor = Depends(get_quality_monitor)
+    monitor: DataQualityMonitor = Depends(get_quality_monitor),
+    auth: AuthContext = Depends(require_scope("write")),
 ) -> Dict[str, Any]:
     """
     수동 데이터 검증
@@ -373,7 +381,8 @@ async def validate_data(
 async def get_change_detection_stats(
     source_id: str,
     days: int = Query(7, ge=1, le=30, description="조회 기간 (일)"),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     변경 감지 통계 조회
@@ -398,7 +407,8 @@ async def get_validation_timeline(
     source_id: Optional[str] = Query(None, description="소스 ID 필터"),
     days: int = Query(7, ge=1, le=30, description="조회 기간 (일)"),
     interval: str = Query("hour", description="집계 단위: hour, day"),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     데이터 수집/검증 시계열 데이터
@@ -506,7 +516,8 @@ async def get_validation_timeline(
 @router.get("/dashboard")
 async def get_quality_dashboard(
     days: int = Query(7, ge=1, le=30),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth),
 ) -> Dict[str, Any]:
     """
     데이터 품질 대시보드

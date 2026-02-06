@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from app.models.schemas import ErrorLogResponse, TriggerResponse
 from app.services.mongo_service import MongoService
 from app.services.airflow_trigger import AirflowTrigger
+from app.auth.dependencies import require_auth, require_scope, require_admin, AuthContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,7 +32,8 @@ async def list_errors(
     error_code: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ):
     """List error logs with optional filtering."""
     errors = mongo.list_errors(
@@ -47,7 +49,8 @@ async def list_errors(
 async def list_unresolved_errors(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_auth)
 ):
     """Get all unresolved errors."""
     errors = mongo.list_errors(resolved=False, skip=skip, limit=limit)
@@ -55,7 +58,7 @@ async def list_unresolved_errors(
 
 
 @router.get("/stats")
-async def get_error_stats(mongo: MongoService = Depends(get_mongo)):
+async def get_error_stats(mongo: MongoService = Depends(get_mongo), auth: AuthContext = Depends(require_auth)):
     """Get error statistics."""
     total = mongo.count_errors()
     resolved = mongo.count_errors(resolved=True)
@@ -77,7 +80,7 @@ async def get_error_stats(mongo: MongoService = Depends(get_mongo)):
 
 
 @router.get("/{error_id}", response_model=ErrorLogResponse)
-async def get_error(error_id: str, mongo: MongoService = Depends(get_mongo)):
+async def get_error(error_id: str, mongo: MongoService = Depends(get_mongo), auth: AuthContext = Depends(require_auth)):
     """Get a specific error by ID."""
     error = mongo.get_error(error_id)
     if not error:
@@ -90,7 +93,8 @@ async def resolve_error(
     error_id: str,
     method: str = Query("manual", pattern="^(auto|manual)$"),
     detail: str = Query(""),
-    mongo: MongoService = Depends(get_mongo)
+    mongo: MongoService = Depends(get_mongo),
+    auth: AuthContext = Depends(require_scope("write"))
 ):
     """Mark an error as resolved."""
     error = mongo.get_error(error_id)
@@ -106,7 +110,7 @@ async def resolve_error(
 
 
 @router.post("/{error_id}/retry", response_model=TriggerResponse)
-async def retry_error(error_id: str, mongo: MongoService = Depends(get_mongo)):
+async def retry_error(error_id: str, mongo: MongoService = Depends(get_mongo), auth: AuthContext = Depends(require_scope("write"))):
     """
     Retry crawling for an error (one-click recovery).
 
@@ -148,7 +152,7 @@ async def retry_error(error_id: str, mongo: MongoService = Depends(get_mongo)):
 
 
 @router.post("/{error_id}/regenerate", response_model=TriggerResponse)
-async def regenerate_crawler_code(error_id: str, mongo: MongoService = Depends(get_mongo)):
+async def regenerate_crawler_code(error_id: str, mongo: MongoService = Depends(get_mongo), auth: AuthContext = Depends(require_scope("write"))):
     """
     Regenerate crawler code for an error.
 
