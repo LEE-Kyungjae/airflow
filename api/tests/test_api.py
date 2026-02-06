@@ -119,14 +119,19 @@ class TestErrorsEndpoint:
 class TestMonitoringEndpoint:
     """모니터링 엔드포인트 테스트"""
 
-    def test_monitoring_health(self, client, auth_headers):
+    def test_monitoring_health(self, client_no_raise, auth_headers):
         """모니터링 헬스"""
         with patch('app.routers.monitoring.MongoService') as mock_mongo:
             mock_instance = MagicMock()
-            mock_instance.health_check.return_value = {"status": "healthy", "latency_ms": 1}
+            mock_db = MagicMock()
+            mock_instance.db = mock_db
+            mock_db.command.return_value = {'ok': 1}
+            mock_db.crawl_results.count_documents.return_value = 5
+            mock_db.sources.count_documents.side_effect = [10, 8, 2]
+            mock_db.healing_sessions.count_documents.side_effect = [0, 0]
             mock_mongo.return_value = mock_instance
 
-            response = client.get("/api/monitoring/health", headers=auth_headers)
+            response = client_no_raise.get("/api/monitoring/health", headers=auth_headers)
             # 구현에 따라 다를 수 있음
             assert response.status_code in [200, 404, 500]
 

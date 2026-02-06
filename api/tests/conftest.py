@@ -25,8 +25,8 @@ def reset_circuit_breakers():
     """테스트 간 CircuitBreaker 상태 초기화"""
     yield
     try:
-        from app.services.mongo_service import _connection_circuit
-        _connection_circuit.reset()
+        from app.services.mongo_service import MongoService
+        MongoService._connection_circuit.reset()
     except (ImportError, AttributeError):
         pass
 

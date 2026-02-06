@@ -121,21 +121,22 @@ def db_operation(collection_name: str, operation: str):
                     value=str(e)[:100]
                 ) from e
 
+            except NetworkTimeout as e:
+                # 네트워크 타임아웃 - 재시도 가능
+                # NOTE: NetworkTimeout extends ConnectionFailure, so must be caught first
+                logger.error(f"DB network timeout in {func.__name__}: {e}")
+                raise DatabaseOperationError(
+                    operation=operation,
+                    collection=collection_name,
+                    reason=f"Network timeout: {e}"
+                ) from e
+
             except (ConnectionFailure, ServerSelectionTimeoutError, AutoReconnect) as e:
                 # 연결 오류 - 재시도 가능
                 logger.error(f"DB connection error in {func.__name__}: {e}")
                 raise DatabaseConnectionError(
                     reason=str(e),
                     host=self.uri if hasattr(self, 'uri') else ''
-                ) from e
-
-            except NetworkTimeout as e:
-                # 네트워크 타임아웃 - 재시도 가능
-                logger.error(f"DB network timeout in {func.__name__}: {e}")
-                raise DatabaseOperationError(
-                    operation=operation,
-                    collection=collection_name,
-                    reason=f"Network timeout: {e}"
                 ) from e
 
             except ExecutionTimeout as e:

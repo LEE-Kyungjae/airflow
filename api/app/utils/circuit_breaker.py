@@ -14,7 +14,7 @@ from functools import wraps
 from collections import deque
 import threading
 
-from api.app.exceptions import CircuitOpenError
+from ..exceptions import CircuitOpenError
 
 logger = logging.getLogger(__name__)
 

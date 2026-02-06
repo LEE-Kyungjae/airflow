@@ -167,7 +167,7 @@ app = FastAPI(
     contact={
         "name": "Crawler System Team",
         "url": "https://github.com/your-org/crawler-system",
-        "email": "support@crawler-system.local",
+        "email": "support@crawler-system.dev",
     },
     license_info={
         "name": "MIT License",

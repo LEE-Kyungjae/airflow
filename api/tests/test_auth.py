@@ -249,12 +249,20 @@ class TestScopeAuthorization:
 
     def test_read_scope_allowed(self, client, user_token):
         """read 권한으로 읽기 허용"""
-        response = client.get(
-            "/api/sources",
-            headers={"Authorization": f"Bearer {user_token}"}
-        )
-        # 읽기는 허용되어야 함 (인증 모드에 따라 다름)
-        assert response.status_code in [200, 401]  # optional 모드에서는 200
+        from unittest.mock import patch, MagicMock
+
+        with patch('app.routers.sources.MongoService') as mock_mongo:
+            mock_instance = MagicMock()
+            mock_instance.list_sources.return_value = []
+            mock_instance.count_sources.return_value = 0
+            mock_mongo.return_value = mock_instance
+
+            response = client.get(
+                "/api/sources",
+                headers={"Authorization": f"Bearer {user_token}"}
+            )
+            # 읽기는 허용되어야 함 (인증 모드에 따라 다름)
+            assert response.status_code in [200, 401]  # optional 모드에서는 200
 
     def test_write_scope_required(self, client, user_token, sample_source):
         """write 권한 없이 쓰기 시도"""

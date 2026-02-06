@@ -90,8 +90,8 @@ class JWTAuth:
             logger.warning("개발용 임시 JWT 시크릿 키 생성됨 (서버 재시작 시 변경)")
             logger.warning("프로덕션에서는 JWT_SECRET_KEY 환경변수 설정 필요!")
 
-        # 기본 관리자 계정 (개발용)
-        if env == "development":
+        # 기본 관리자 계정 (개발/테스트용)
+        if env in ("development", "test"):
             cls._users["admin"] = User(
                 id="admin",
                 username="admin",

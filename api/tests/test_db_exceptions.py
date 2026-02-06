@@ -191,8 +191,7 @@ class TestMongoServiceOperations:
         mock_db = MagicMock()
         mock_client.__getitem__.return_value = mock_db
 
-        error = MongoDuplicateKeyError("Duplicate key error", code=11000)
-        error.details = {'keyPattern': {'name': 1}}
+        error = MongoDuplicateKeyError("Duplicate key error", code=11000, details={'keyPattern': {'name': 1}})
         mock_db.sources.insert_one.side_effect = error
 
         with pytest.raises(DuplicateKeyError) as exc_info:
