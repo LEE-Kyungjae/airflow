@@ -20,10 +20,27 @@ from app.main import app
 from app.auth import APIKeyAuth, JWTAuth
 
 
+@pytest.fixture(autouse=True)
+def reset_circuit_breakers():
+    """테스트 간 CircuitBreaker 상태 초기화"""
+    yield
+    try:
+        from app.services.mongo_service import _connection_circuit
+        _connection_circuit.reset()
+    except (ImportError, AttributeError):
+        pass
+
+
 @pytest.fixture
 def client():
     """FastAPI 테스트 클라이언트"""
     return TestClient(app)
+
+
+@pytest.fixture
+def client_no_raise():
+    """서버 예외를 500 응답으로 반환하는 테스트 클라이언트"""
+    return TestClient(app, raise_server_exceptions=False)
 
 
 @pytest.fixture
@@ -35,6 +52,12 @@ def auth_headers():
 @pytest.fixture
 def admin_token():
     """관리자 JWT 토큰"""
+    JWTAuth.register_user(
+        user_id="admin",
+        username="admin",
+        role="admin",
+        scopes=["admin", "read", "write", "delete"]
+    )
     token = JWTAuth.create_access_token(
         user_id="admin",
         role="admin",

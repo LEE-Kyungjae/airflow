@@ -46,7 +46,7 @@ class TestRootEndpoint:
 class TestDashboard:
     """대시보드 테스트"""
 
-    def test_dashboard_stats(self, client):
+    def test_dashboard_stats(self, client, auth_headers):
         """대시보드 통계"""
         with patch('app.routers.dashboard.MongoService') as mock_mongo:
             mock_instance = MagicMock()
@@ -62,16 +62,15 @@ class TestDashboard:
                 'unresolved_errors': 3,
                 'timestamp': '2024-01-01T00:00:00'
             }
-            mock_mongo.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_mongo.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mongo.return_value = mock_instance
 
-            response = client.get("/api/dashboard")
+            response = client.get("/api/dashboard", headers=auth_headers)
             assert response.status_code == 200
             data = response.json()
             assert 'sources' in data
             assert 'crawlers' in data
 
-    def test_dashboard_empty(self, client):
+    def test_dashboard_empty(self, client, auth_headers):
         """빈 대시보드"""
         with patch('app.routers.dashboard.MongoService') as mock_mongo:
             mock_instance = MagicMock()
@@ -87,47 +86,49 @@ class TestDashboard:
                 'unresolved_errors': 0,
                 'timestamp': '2024-01-01T00:00:00'
             }
-            mock_mongo.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_mongo.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mongo.return_value = mock_instance
 
-            response = client.get("/api/dashboard")
+            response = client.get("/api/dashboard", headers=auth_headers)
             assert response.status_code == 200
 
 
 class TestErrorsEndpoint:
     """에러 엔드포인트 테스트"""
 
-    def test_list_errors(self, client):
+    def test_list_errors(self, client, auth_headers):
         """에러 목록 조회"""
         with patch('app.routers.errors.MongoService') as mock_mongo:
             mock_instance = MagicMock()
             mock_instance.list_errors.return_value = []
-            mock_mongo.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_mongo.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mongo.return_value = mock_instance
 
-            response = client.get("/api/errors")
+            response = client.get("/api/errors", headers=auth_headers)
             assert response.status_code == 200
 
-    def test_list_errors_with_filter(self, client):
+    def test_list_errors_with_filter(self, client, auth_headers):
         """필터링된 에러 목록"""
         with patch('app.routers.errors.MongoService') as mock_mongo:
             mock_instance = MagicMock()
             mock_instance.list_errors.return_value = []
-            mock_mongo.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_mongo.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mongo.return_value = mock_instance
 
-            response = client.get("/api/errors?resolved=false")
+            response = client.get("/api/errors?resolved=false", headers=auth_headers)
             assert response.status_code == 200
 
 
 class TestMonitoringEndpoint:
     """모니터링 엔드포인트 테스트"""
 
-    def test_monitoring_health(self, client):
+    def test_monitoring_health(self, client, auth_headers):
         """모니터링 헬스"""
-        response = client.get("/api/monitoring/health")
-        # 구현에 따라 다를 수 있음
-        assert response.status_code in [200, 404, 500]
+        with patch('app.routers.monitoring.MongoService') as mock_mongo:
+            mock_instance = MagicMock()
+            mock_instance.health_check.return_value = {"status": "healthy", "latency_ms": 1}
+            mock_mongo.return_value = mock_instance
+
+            response = client.get("/api/monitoring/health", headers=auth_headers)
+            # 구현에 따라 다를 수 있음
+            assert response.status_code in [200, 404, 500]
 
 
 class TestOpenAPISchema:
@@ -185,4 +186,3 @@ class TestContentTypes:
             content="not json"
         )
         assert response.status_code == 422
-

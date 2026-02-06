@@ -33,7 +33,15 @@ airflow/logs/
 .DS_Store
 Thumbs.db
 
+# Node / Frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
 # Test
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Misc
+nul

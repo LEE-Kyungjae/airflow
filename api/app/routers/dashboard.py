@@ -6,7 +6,7 @@ Endpoints for dashboard data and system overview.
 
 import logging
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.models.schemas import DashboardResponse
 from app.services.mongo_service import MongoService

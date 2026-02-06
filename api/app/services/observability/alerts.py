@@ -59,7 +59,7 @@ class AlertRule:
 
     # Condition
     condition: AlertCondition = AlertCondition.THRESHOLD_ABOVE
-    field: str = "error_count"       # Field to check
+    metric_field: str = "error_count"       # Field to check
     threshold: float = 0             # Threshold value
     window_minutes: int = 60         # Time window for rate calculations
     consecutive_count: int = 3       # For consecutive failures
@@ -442,7 +442,7 @@ class AlertRuleEngine:
         Returns:
             True if condition is met
         """
-        field_value = metric_data.get(rule.field)
+        field_value = metric_data.get(rule.metric_field)
         if field_value is None:
             return rule.condition == AlertCondition.MISSING_DATA
 
@@ -461,7 +461,7 @@ class AlertRuleEngine:
 
             elif rule.condition == AlertCondition.RATE_ABOVE:
                 rate = await self._calculate_rate(
-                    rule.field,
+                    rule.metric_field,
                     metric_data.get("source_id"),
                     rule.window_minutes
                 )
@@ -469,7 +469,7 @@ class AlertRuleEngine:
 
             elif rule.condition == AlertCondition.RATE_BELOW:
                 rate = await self._calculate_rate(
-                    rule.field,
+                    rule.metric_field,
                     metric_data.get("source_id"),
                     rule.window_minutes
                 )
@@ -481,7 +481,7 @@ class AlertRuleEngine:
             logger.warning(
                 "Error evaluating condition",
                 rule=rule.name,
-                field=rule.field,
+                field=rule.metric_field,
                 value=field_value,
                 error=str(e)
             )
@@ -581,9 +581,9 @@ class AlertRuleEngine:
             severity=rule.severity.value,
             condition_details={
                 "condition": rule.condition.value,
-                "field": rule.field,
+                "field": rule.metric_field,
                 "threshold": rule.threshold,
-                "actual_value": metric_data.get(rule.field),
+                "actual_value": metric_data.get(rule.metric_field),
             },
             actions_taken=[],
             notification_sent=False
@@ -694,9 +694,9 @@ class AlertRuleEngine:
             metadata={
                 "rule_name": rule.name,
                 "condition": rule.condition.value,
-                "field": rule.field,
+                "field": rule.metric_field,
                 "threshold": rule.threshold,
-                "actual_value": metric_data.get(rule.field),
+                "actual_value": metric_data.get(rule.metric_field),
             }
         )
 
@@ -709,7 +709,7 @@ class AlertRuleEngine:
         source_id: Optional[str]
     ) -> str:
         """Format alert message for notification."""
-        actual_value = metric_data.get(rule.field, "N/A")
+        actual_value = metric_data.get(rule.metric_field, "N/A")
 
         return f"""
 Alert Rule Triggered: {rule.name}
@@ -718,7 +718,7 @@ Description: {rule.description}
 
 Source: {source_id or 'All Sources'}
 Condition: {rule.condition.value}
-Field: {rule.field}
+Field: {rule.metric_field}
 Threshold: {rule.threshold}
 Actual Value: {actual_value}
 
@@ -906,7 +906,7 @@ def create_default_rules() -> List[AlertRule]:
             name="High Error Rate",
             description="Error count exceeds threshold during pipeline execution",
             condition=AlertCondition.THRESHOLD_ABOVE,
-            field="error_count",
+            metric_field="error_count",
             threshold=10,
             severity=AlertSeverity.ERROR,
             actions=[AlertAction.NOTIFY],
@@ -917,7 +917,7 @@ def create_default_rules() -> List[AlertRule]:
             name="Low Quality Score",
             description="Data quality score falls below acceptable threshold",
             condition=AlertCondition.THRESHOLD_BELOW,
-            field="quality_score",
+            metric_field="quality_score",
             threshold=70.0,
             severity=AlertSeverity.WARNING,
             actions=[AlertAction.NOTIFY],
@@ -928,7 +928,7 @@ def create_default_rules() -> List[AlertRule]:
             name="Consecutive Failures",
             description="Multiple consecutive pipeline failures detected",
             condition=AlertCondition.CONSECUTIVE_FAILURES,
-            field="status",
+            metric_field="status",
             consecutive_count=3,
             severity=AlertSeverity.CRITICAL,
             actions=[AlertAction.NOTIFY, AlertAction.ESCALATE],
@@ -939,7 +939,7 @@ def create_default_rules() -> List[AlertRule]:
             name="Long Execution Time",
             description="Pipeline execution time exceeds expected duration",
             condition=AlertCondition.THRESHOLD_ABOVE,
-            field="execution_time_ms",
+            metric_field="execution_time_ms",
             threshold=300000,  # 5 minutes
             severity=AlertSeverity.WARNING,
             actions=[AlertAction.NOTIFY],
@@ -950,7 +950,7 @@ def create_default_rules() -> List[AlertRule]:
             name="Zero Records Loaded",
             description="Pipeline completed but loaded no records",
             condition=AlertCondition.EQUALS,
-            field="records_loaded",
+            metric_field="records_loaded",
             threshold=0,
             severity=AlertSeverity.WARNING,
             actions=[AlertAction.NOTIFY],

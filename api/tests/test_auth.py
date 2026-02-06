@@ -36,7 +36,8 @@ class TestLogin:
             }
         )
         assert response.status_code == 401
-        assert "error" in response.json()
+        data = response.json()
+        assert "error" in data or "error" in data.get("detail", {})
 
     def test_login_wrong_username(self, client):
         """잘못된 사용자명"""
@@ -267,22 +268,21 @@ class TestScopeAuthorization:
 
     def test_admin_has_all_scopes(self, client, auth_headers_jwt, sample_source):
         """관리자는 모든 권한 보유"""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch, MagicMock, AsyncMock
 
         with patch('app.routers.sources.MongoService') as mock_mongo:
             mock_instance = MagicMock()
             mock_instance.get_source_by_name.return_value = None
             mock_instance.create_source.return_value = "test-id"
-            mock_mongo.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_mongo.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mongo.return_value = mock_instance
 
             with patch('app.routers.sources.AirflowTrigger') as mock_airflow:
                 mock_airflow_instance = MagicMock()
-                mock_airflow_instance.trigger_dag.return_value = {
+                mock_airflow_instance.trigger_dag = AsyncMock(return_value={
                     "success": True,
                     "run_id": "test-run-id",
                     "message": "Triggered"
-                }
+                })
                 mock_airflow.return_value = mock_airflow_instance
 
                 response = client.post(

@@ -34,7 +34,7 @@ from ..exceptions import (
     DatabaseTransactionError,
     ObjectIdValidationError
 )
-from ..utils.circuit_breaker import CircuitBreaker, CircuitState
+from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitState
 from ..utils.retry import RetryConfig, RetryStrategy, async_retry_with_backoff
 
 logger = logging.getLogger(__name__)
@@ -183,6 +183,23 @@ def db_operation(collection_name: str, operation: str):
 
 
 # ============================================
+# Async Motor DB dependency (for async routers)
+# ============================================
+
+_motor_client = None
+
+async def get_db():
+    """Async Motor database dependency for FastAPI."""
+    from motor.motor_asyncio import AsyncIOMotorClient
+    global _motor_client
+    if _motor_client is None:
+        uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
+        _motor_client = AsyncIOMotorClient(uri)
+    db_name = os.getenv('MONGODB_DATABASE', 'crawler_system')
+    yield _motor_client[db_name]
+
+
+# ============================================
 # MongoDB 서비스 클래스
 # ============================================
 
@@ -237,9 +254,11 @@ class MongoService:
     # 연결 Circuit Breaker (클래스 레벨)
     _connection_circuit = CircuitBreaker(
         name="mongo_connection",
-        failure_threshold=5,
-        reset_timeout=30,
-        half_open_max_calls=3
+        config=CircuitBreakerConfig(
+            failure_threshold=5,
+            reset_timeout=30,
+            half_open_max_calls=3
+        )
     )
 
     def __init__(self):
