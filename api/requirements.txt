@@ -7,7 +7,7 @@ python-multipart==0.0.6
 pymongo==4.16.0
 
 # HTTP client
-httpx==0.26.0
+httpx==0.28.1
 
 # Validation
 pydantic==2.12.5
