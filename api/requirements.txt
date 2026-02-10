@@ -4,7 +4,7 @@ uvicorn[standard]==0.40.0
 python-multipart==0.0.6
 
 # Database
-pymongo==4.6.1
+pymongo==4.16.0
 
 # HTTP client
 httpx==0.26.0
