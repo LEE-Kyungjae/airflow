@@ -1,6 +1,10 @@
 """API Routers."""
 
-from . import sources, crawlers, errors, dashboard, quick_add, monitoring, reviews
+from . import (
+    sources, crawlers, errors, dashboard, quick_add, monitoring,
+    reviews, data_quality, metrics, lineage, export, backup,
+    contracts, schemas, catalog, versions,
+)
 
 try:
     from . import auth
@@ -20,6 +24,15 @@ __all__ = [
     'quick_add',
     'monitoring',
     'reviews',
+    'data_quality',
+    'metrics',
+    'lineage',
+    'export',
+    'backup',
+    'contracts',
+    'schemas',
+    'catalog',
+    'versions',
     'auth',
-    'auth_config'
+    'auth_config',
 ]

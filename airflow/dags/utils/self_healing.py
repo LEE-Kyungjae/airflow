@@ -113,8 +113,13 @@ class SelfHealingEngine:
 
     def __init__(self, mongo_service=None):
         self.api_key = os.getenv('OPENAI_API_KEY')
+        self.model = os.getenv('AI_MODEL', 'gpt-4o-mini')
         if self.api_key:
-            self.client = OpenAI(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            ai_base_url = os.getenv('AI_BASE_URL')
+            if ai_base_url:
+                client_kwargs["base_url"] = ai_base_url
+            self.client = OpenAI(**client_kwargs)
         else:
             self.client = None
 
@@ -222,7 +227,7 @@ JSON만 출력하세요."""
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "크롤러 오류 진단 전문가입니다."},
                     {"role": "user", "content": prompt}
@@ -433,7 +438,7 @@ JSON만 출력하세요."""
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "크롤러 코드 오류 수정 전문가입니다. 정확하고 안정적인 코드를 생성합니다."},
                     {"role": "user", "content": prompt}

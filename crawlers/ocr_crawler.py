@@ -37,7 +37,7 @@ class OCRCrawler(BaseCrawler):
         use_gpu: bool = False,
         enable_ai_refinement: bool = True,
         openai_api_key: Optional[str] = None,
-        openai_model: str = "gpt-4o-mini",
+        openai_model: Optional[str] = None,
         image_selectors: Optional[List[str]] = None,
         content_type: str = "auto",
         preprocess_options: Optional[Dict[str, Any]] = None,

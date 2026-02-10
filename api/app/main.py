@@ -18,7 +18,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
 
-from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, reviews, data_quality, metrics, lineage, export, backup
+from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions
 from app.services.mongo_service import MongoService
 from app.auth import APIKeyAuth, JWTAuth
 from app.core import configure_logging, get_logger, CorrelationIdMiddleware
@@ -123,6 +123,26 @@ TAGS_METADATA = [
     {
         "name": "Backup",
         "description": "Database backup and restore operations with cloud storage integration.",
+    },
+    {
+        "name": "Contracts",
+        "description": "Data quality contracts management with Great Expectations-style validation.",
+    },
+    {
+        "name": "Schemas",
+        "description": "Schema registry for data validation, versioning, and automatic schema detection.",
+    },
+    {
+        "name": "Catalog",
+        "description": "Data catalog for dataset discovery, metadata management, and search.",
+    },
+    {
+        "name": "Versions",
+        "description": "Data versioning with snapshots, diff comparison, and rollback support.",
+    },
+    {
+        "name": "Auth Config",
+        "description": "Authentication configuration for crawling sources requiring login.",
     },
     {
         "name": "Health",
@@ -333,3 +353,8 @@ app.include_router(metrics.router, tags=["Metrics"])  # /metrics (no prefix for 
 app.include_router(lineage.router, prefix="/api/lineage", tags=["Lineage"])  # 데이터 리니지
 app.include_router(export.router, prefix="/api/export", tags=["Export"])  # 데이터 내보내기
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])  # 백업 및 복구
+app.include_router(contracts.router, prefix="/api/contracts", tags=["Contracts"])  # 데이터 품질 계약
+app.include_router(schemas.router, prefix="/api/schemas", tags=["Schemas"])  # 스키마 레지스트리
+app.include_router(catalog.router, prefix="/api/catalog", tags=["Catalog"])  # 데이터 카탈로그
+app.include_router(versions.router, prefix="/api/versions", tags=["Versions"])  # 데이터 버전 관리
+app.include_router(auth_config.router, prefix="/api/sources", tags=["Auth Config"])  # 소스별 인증 설정

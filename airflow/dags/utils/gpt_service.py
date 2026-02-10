@@ -267,25 +267,33 @@ JSON만 출력하세요."""
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini",
-        timeout: int = 60
+        model: Optional[str] = None,
+        timeout: int = 60,
+        base_url: Optional[str] = None
     ):
         """
         Initialize GPT Service.
 
         Args:
             api_key: OpenAI API key. If not provided, reads from OPENAI_API_KEY env var.
-            model: Model to use. Defaults to gpt-4o-mini.
+            model: Model to use. Defaults to AI_MODEL env var or gpt-4o-mini.
             timeout: Request timeout in seconds.
+            base_url: API base URL for OpenAI-compatible providers (GLM, DeepSeek, etc).
         """
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
 
-        self.client = OpenAI(api_key=self.api_key, timeout=timeout)
-        self.model = model
+        self.model = model or os.getenv('AI_MODEL', 'gpt-4o-mini')
         self.timeout = timeout
-        self.token_limit = self.MODEL_TOKEN_LIMITS.get(model, 16000)
+
+        client_kwargs = {"api_key": self.api_key, "timeout": timeout}
+        ai_base_url = base_url or os.getenv('AI_BASE_URL')
+        if ai_base_url:
+            client_kwargs["base_url"] = ai_base_url
+
+        self.client = OpenAI(**client_kwargs)
+        self.token_limit = self.MODEL_TOKEN_LIMITS.get(self.model, 16000)
 
     def _call_gpt(
         self,

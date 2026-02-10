@@ -213,17 +213,17 @@ JSON만 출력하세요."""
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-4o-mini"
+        model: Optional[str] = None
     ):
         """
         Initialize AI Text Refiner.
 
         Args:
             api_key: OpenAI API key
-            model: Model to use
+            model: Model to use. Defaults to AI_MODEL env var or gpt-4o-mini.
         """
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
-        self.model = model
+        self.model = model or os.getenv('AI_MODEL', 'gpt-4o-mini')
         self._client = None
 
     @property
@@ -233,7 +233,11 @@ JSON만 출력하세요."""
             from openai import OpenAI
             if not self.api_key:
                 raise ValueError("OpenAI API key is required")
-            self._client = OpenAI(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            ai_base_url = os.getenv('AI_BASE_URL')
+            if ai_base_url:
+                client_kwargs["base_url"] = ai_base_url
+            self._client = OpenAI(**client_kwargs)
         return self._client
 
     def _call_gpt(
@@ -701,7 +705,7 @@ class OCRPipeline:
         ocr_languages: List[str] = None,
         use_gpu: bool = False,
         openai_api_key: Optional[str] = None,
-        openai_model: str = "gpt-4o-mini"
+        openai_model: Optional[str] = None
     ):
         """
         Initialize OCR Pipeline.

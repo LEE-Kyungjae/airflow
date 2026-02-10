@@ -107,8 +107,13 @@ class AutoDiscoveryService:
 
     def __init__(self):
         self.api_key = os.getenv('OPENAI_API_KEY')
+        self.model = os.getenv('AI_MODEL', 'gpt-4o-mini')
         if self.api_key:
-            self.client = OpenAI(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            ai_base_url = os.getenv('AI_BASE_URL')
+            if ai_base_url:
+                client_kwargs["base_url"] = ai_base_url
+            self.client = OpenAI(**client_kwargs)
         else:
             self.client = None
             logger.warning("OpenAI API key not set")
@@ -393,7 +398,7 @@ JSON만 출력하세요."""
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "웹 스크래핑 전문가입니다. 정확한 CSS 선택자와 데이터 구조를 분석합니다."},
                     {"role": "user", "content": prompt}

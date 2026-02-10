@@ -261,6 +261,13 @@ async def get_next_review(
     - 기존: 1개 find + 1개 소스 조회 + 2개 count 쿼리
     - 최적화 후: 1개 aggregation ($lookup + $facet으로 position 계산)
     """
+    # Auto-resume: if no current_id, look up reviewer's last bookmark
+    if not current_id:
+        reviewer_id = auth.user_id or "anonymous"
+        bookmark = await db.reviewer_bookmarks.find_one({"reviewer_id": reviewer_id})
+        if bookmark:
+            current_id = bookmark.get("last_review_id")
+
     match_stage = {"review_status": "pending"}
 
     if source_id:
@@ -378,6 +385,46 @@ async def get_next_review(
             "url": source_info.get("url", "")
         },
         "position": position,
+        "total_pending": total_pending
+    }
+
+
+@router.get("/resume")
+async def get_resume_info(
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
+):
+    """
+    Get reviewer's last review position for session resume.
+
+    Returns the bookmark info so the UI can offer "Continue from where you left off".
+    """
+    reviewer_id = auth.user_id or "anonymous"
+    bookmark = await db.reviewer_bookmarks.find_one({"reviewer_id": reviewer_id})
+
+    if not bookmark:
+        # No bookmark - count total pending
+        total_pending = await db.data_reviews.count_documents({"review_status": "pending"})
+        return {
+            "has_bookmark": False,
+            "total_pending": total_pending,
+            "message": "No previous session found. Start from the beginning."
+        }
+
+    last_review = await db.data_reviews.find_one({"_id": ObjectId(bookmark["last_review_id"])})
+
+    # Count remaining pending after the bookmarked review
+    remaining_query = {"review_status": "pending"}
+    if last_review:
+        remaining_query["created_at"] = {"$gt": last_review["created_at"]}
+    remaining = await db.data_reviews.count_documents(remaining_query)
+    total_pending = await db.data_reviews.count_documents({"review_status": "pending"})
+
+    return {
+        "has_bookmark": True,
+        "last_review_id": bookmark["last_review_id"],
+        "last_reviewed_at": bookmark["last_reviewed_at"].isoformat() if bookmark.get("last_reviewed_at") else None,
+        "remaining_after_bookmark": remaining,
         "total_pending": total_pending
     }
 
@@ -554,6 +601,18 @@ async def update_review(
                         }
                     }
                 )
+
+    # Save reviewer bookmark for resume functionality
+    await db.reviewer_bookmarks.update_one(
+        {"reviewer_id": reviewer_id},
+        {"$set": {
+            "reviewer_id": reviewer_id,
+            "last_review_id": review_id,
+            "last_source_id": str(review.get("source_id", "")),
+            "last_reviewed_at": datetime.utcnow()
+        }},
+        upsert=True
+    )
 
     updated = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
     return serialize_doc(updated)
