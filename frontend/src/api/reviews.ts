@@ -96,3 +96,15 @@ export async function bulkReject(request: {
   const { data } = await apiClient.post('/api/reviews/bulk-reject', request)
   return data
 }
+
+export async function getReviewTrends(days: number = 7): Promise<{
+  date: string
+  approved: number
+  corrected: number
+  rejected: number
+  on_hold: number
+  total: number
+}[]> {
+  const { data } = await apiClient.get('/api/reviews/stats/trends', { params: { days } })
+  return data
+}

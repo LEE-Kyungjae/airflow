@@ -16,6 +16,13 @@ interface UndoEntry {
   previousStatus: string
 }
 
+interface CellCorrection {
+  field: string
+  rowIndex: number
+  original_value: any
+  corrected_value: any
+}
+
 interface ReviewSessionState {
   review: ReviewItem | null
   sourceContent: SourceContentData | null
@@ -24,6 +31,8 @@ interface ReviewSessionState {
   totalPending: number
   selectedRowIndex: number
   rowStatuses: Map<number, string>
+  corrections: CellCorrection[]
+  sourceFilter: string | null
   isLoading: boolean
   hasNext: boolean
 }
@@ -42,6 +51,8 @@ export function useReviewSession() {
     totalPending: 0,
     selectedRowIndex: 0,
     rowStatuses: new Map(),
+    corrections: [],
+    sourceFilter: null,
     isLoading: false,
     hasNext: true,
   })
@@ -53,6 +64,7 @@ export function useReviewSession() {
         const result = await getNextReview({
           current_id: currentId || state.review?._id,
           direction,
+          source_id: state.sourceFilter || undefined,
         })
 
         if (!result.has_next || !result.review) {
@@ -78,17 +90,19 @@ export function useReviewSession() {
           rowStatuses.set(0, 'pending')
         }
 
-        setState({
-          review: result.review,
+        setState((prev) => ({
+          ...prev,
+          review: result.review!,
           sourceContent,
           sourceMeta: result.source || null,
           position: result.position || 0,
           totalPending: result.total_pending || 0,
           selectedRowIndex: 0,
           rowStatuses,
+          corrections: [],
           isLoading: false,
           hasNext: true,
-        })
+        }))
 
         undoStack.current = []
         sessionStartTime.current = Date.now()
@@ -97,8 +111,12 @@ export function useReviewSession() {
         toast.error('Failed to load review')
       }
     },
-    [state.review?._id, toast]
+    [state.review?._id, state.sourceFilter, toast]
   )
+
+  const setSourceFilter = useCallback((sourceId: string | null) => {
+    setState((prev) => ({ ...prev, sourceFilter: sourceId }))
+  }, [])
 
   const updateRowStatus = useCallback((index: number, status: string) => {
     setState((prev) => {
@@ -118,6 +136,28 @@ export function useReviewSession() {
       return { ...prev, rowStatuses: newStatuses }
     })
   }, [])
+
+  const editCell = useCallback(
+    (rowIndex: number, field: string, originalValue: any, newValue: any) => {
+      setState((prev) => {
+        // Remove existing correction for this cell if any
+        const filtered = prev.corrections.filter(
+          (c) => !(c.rowIndex === rowIndex && c.field === field)
+        )
+        // Add new correction (skip if reverting to original)
+        if (String(originalValue ?? '') !== String(newValue ?? '')) {
+          filtered.push({
+            field,
+            rowIndex,
+            original_value: originalValue,
+            corrected_value: newValue,
+          })
+        }
+        return { ...prev, corrections: filtered }
+      })
+    },
+    []
+  )
 
   const approveRowMutation = useMutation({
     mutationFn: async ({ reviewId, status }: { reviewId: string; status: string }) => {
@@ -200,12 +240,15 @@ export function useReviewSession() {
     const hasRejected = statuses.includes('rejected')
     const hasFlagged = statuses.includes('flagged')
     const allApproved = statuses.every((s) => s === 'approved')
+    const hasCorrections = state.corrections.length > 0
 
     let reviewStatus: string
     let rejectionReason: string | undefined
 
     if (hasRejected) {
       reviewStatus = 'rejected'
+    } else if (hasCorrections) {
+      reviewStatus = 'corrected'
     } else if (hasFlagged) {
       reviewStatus = 'on_hold'
     } else if (allApproved) {
@@ -216,20 +259,32 @@ export function useReviewSession() {
 
     const duration = Date.now() - sessionStartTime.current
 
+    // Build corrections payload
+    const corrections = hasCorrections
+      ? state.corrections.map((c) => ({
+          field: c.field,
+          original_value: c.original_value,
+          corrected_value: c.corrected_value,
+        }))
+      : undefined
+
     try {
       await updateReview(state.review._id, {
         status: reviewStatus,
         rejection_reason: rejectionReason,
         review_duration_ms: duration,
+        corrections,
       })
 
       queryClient.invalidateQueries({ queryKey: ['reviewDashboard'] })
       toast.success(
         reviewStatus === 'approved'
           ? 'Approved and saved'
-          : reviewStatus === 'rejected'
-            ? 'Rejected'
-            : 'Saved as on hold'
+          : reviewStatus === 'corrected'
+            ? 'Corrected and saved'
+            : reviewStatus === 'rejected'
+              ? 'Rejected'
+              : 'Saved as on hold'
       )
 
       // Load next review
@@ -237,7 +292,7 @@ export function useReviewSession() {
     } catch {
       toast.error('Failed to save review')
     }
-  }, [state.review, state.rowStatuses, loadReview, queryClient, toast])
+  }, [state.review, state.rowStatuses, state.corrections, loadReview, queryClient, toast])
 
   const revertLastReview = useCallback(
     async (reviewId: string) => {
@@ -276,6 +331,8 @@ export function useReviewSession() {
   return {
     ...state,
     loadReview,
+    setSourceFilter,
+    editCell,
     approveRow,
     flagRow,
     rejectRow,

@@ -733,6 +733,74 @@ async def batch_approve(
     }
 
 
+@router.get("/stats/trends")
+async def get_review_trends(
+    days: int = Query(7, ge=1, le=90, description="Number of days to show"),
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
+):
+    """
+    Get review trends over time for charting.
+
+    Returns daily counts of approved, corrected, rejected, and on_hold reviews.
+    """
+    from datetime import timedelta
+
+    start_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+
+    pipeline = [
+        {"$match": {
+            "reviewed_at": {"$gte": start_date},
+            "review_status": {"$ne": "pending"}
+        }},
+        {"$group": {
+            "_id": {
+                "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$reviewed_at"}},
+                "status": "$review_status"
+            },
+            "count": {"$sum": 1}
+        }},
+        {"$group": {
+            "_id": "$_id.date",
+            "statuses": {
+                "$push": {"status": "$_id.status", "count": "$count"}
+            },
+            "total": {"$sum": "$count"}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+
+    results = await db.data_reviews.aggregate(pipeline).to_list(None)
+
+    # Build complete date range with defaults
+    trend_data = []
+    for i in range(days):
+        date = start_date + timedelta(days=i)
+        date_str = date.strftime("%Y-%m-%d")
+
+        # Find matching result
+        day_data = next((r for r in results if r["_id"] == date_str), None)
+
+        entry = {
+            "date": date_str,
+            "approved": 0,
+            "corrected": 0,
+            "rejected": 0,
+            "on_hold": 0,
+            "total": 0,
+        }
+
+        if day_data:
+            entry["total"] = day_data["total"]
+            for s in day_data["statuses"]:
+                if s["status"] in entry:
+                    entry[s["status"]] = s["count"]
+
+        trend_data.append(entry)
+
+    return trend_data
+
+
 @router.get("/stats/by-source/{source_id}")
 async def get_source_review_stats(source_id: str, db=Depends(get_db), auth: AuthContext = Depends(require_auth)):
     """Get review statistics for a specific source."""

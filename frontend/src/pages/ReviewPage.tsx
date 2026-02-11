@@ -1,5 +1,15 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from 'recharts'
 import {
   ClipboardCheck,
   Play,
@@ -8,6 +18,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   TrendingUp,
+  Filter,
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -17,7 +28,7 @@ import { SourceViewer } from '@/components/review/SourceViewer'
 import { RejectReasonModal } from '@/components/review/RejectReasonModal'
 import { useReviewSession } from '@/hooks/useReviewSession'
 import { useKeyboardReview } from '@/hooks/useKeyboardReview'
-import { getReviewDashboard, getResumeInfo } from '@/api/reviews'
+import { getReviewDashboard, getResumeInfo, getReviewTrends } from '@/api/reviews'
 import { cn } from '@/lib/utils'
 import type { RejectionReason, ReviewDashboardData } from '@/types'
 
@@ -43,11 +54,28 @@ export default function ReviewPage() {
     enabled: viewMode === 'dashboard',
   })
 
+  // Review trends
+  const { data: trends } = useQuery({
+    queryKey: ['reviewTrends'],
+    queryFn: () => getReviewTrends(14),
+    enabled: viewMode === 'dashboard',
+  })
+
   // Start review session
   const handleStartReview = useCallback(async () => {
     setViewMode('review')
     await session.loadReview('forward')
   }, [session])
+
+  // Start filtered review by source
+  const handleStartFilteredReview = useCallback(
+    async (sourceId: string) => {
+      session.setSourceFilter(sourceId)
+      setViewMode('review')
+      await session.loadReview('forward')
+    },
+    [session]
+  )
 
   // Resume from bookmark
   const handleResumeReview = useCallback(async () => {
@@ -59,8 +87,9 @@ export default function ReviewPage() {
 
   // Back to dashboard
   const handleBackToDashboard = useCallback(() => {
+    session.setSourceFilter(null)
     setViewMode('dashboard')
-  }, [])
+  }, [session])
 
   // Rejection handler
   const handleRejectConfirm = useCallback(
@@ -85,17 +114,22 @@ export default function ReviewPage() {
   })
 
   // Get active highlight based on selected row
-  const activeHighlight =
-    session.review?.source_highlights?.[session.selectedRowIndex] || undefined
+  const activeHighlight = useMemo(() => {
+    if (!session.review?.source_highlights) return undefined
+    // Map by row index - source_highlights is an array matching data rows
+    return session.review.source_highlights[session.selectedRowIndex] || undefined
+  }, [session.review?.source_highlights, session.selectedRowIndex])
 
   if (viewMode === 'dashboard') {
     return (
       <ReviewDashboard
         dashboard={dashboard}
         resumeInfo={resumeInfo}
+        trends={trends}
         isLoading={dashboardLoading}
         onStart={handleStartReview}
         onResume={handleResumeReview}
+        onStartFiltered={handleStartFilteredReview}
       />
     )
   }
@@ -133,6 +167,22 @@ export default function ReviewPage() {
         isLoading={session.isLoading}
       />
 
+      {/* Source filter indicator */}
+      {session.sourceFilter && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800">
+          <Filter className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+          <span className="text-xs text-blue-700 dark:text-blue-300">
+            Filtering by source
+          </span>
+          <button
+            onClick={() => session.setSourceFilter(null)}
+            className="text-xs text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 underline"
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
+
       {/* Split panel */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left: Source Viewer */}
@@ -152,6 +202,8 @@ export default function ReviewPage() {
               selectedIndex={session.selectedRowIndex}
               rowStatuses={session.rowStatuses}
               onRowClick={(index) => session.selectRow(index)}
+              onCellEdit={session.editCell}
+              corrections={session.corrections}
               confidenceScore={session.review.confidence_score}
             />
           ) : (
@@ -173,6 +225,86 @@ export default function ReviewPage() {
 }
 
 // ============================================================
+// Review Trend Chart
+// ============================================================
+
+interface TrendDataPoint {
+  date: string
+  approved: number
+  corrected: number
+  rejected: number
+  on_hold: number
+  total: number
+}
+
+function ReviewTrendChart({ data }: { data: TrendDataPoint[] }) {
+  const formatted = data.map((d) => ({
+    ...d,
+    date: new Date(d.date).toLocaleDateString('en', { month: 'short', day: 'numeric' }),
+  }))
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+      <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">
+        Review Trends (14 days)
+      </h3>
+      <ResponsiveContainer width="100%" height={220}>
+        <AreaChart data={formatted} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+          <defs>
+            <linearGradient id="colorApproved" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+            </linearGradient>
+            <linearGradient id="colorCorrected" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+            </linearGradient>
+            <linearGradient id="colorRejected" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} className="text-gray-500" />
+          <YAxis tick={{ fontSize: 11 }} className="text-gray-500" />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: 'var(--color-gray-800, #1f2937)',
+              border: '1px solid var(--color-gray-700, #374151)',
+              borderRadius: '8px',
+              color: '#e5e7eb',
+              fontSize: '12px',
+            }}
+          />
+          <Legend wrapperStyle={{ fontSize: '11px' }} />
+          <Area
+            type="monotone"
+            dataKey="approved"
+            stroke="#22c55e"
+            fill="url(#colorApproved)"
+            strokeWidth={2}
+          />
+          <Area
+            type="monotone"
+            dataKey="corrected"
+            stroke="#3b82f6"
+            fill="url(#colorCorrected)"
+            strokeWidth={2}
+          />
+          <Area
+            type="monotone"
+            dataKey="rejected"
+            stroke="#ef4444"
+            fill="url(#colorRejected)"
+            strokeWidth={2}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+// ============================================================
 // Review Dashboard Sub-component
 // ============================================================
 
@@ -185,12 +317,22 @@ interface ReviewDashboardProps {
     remaining_after_bookmark?: number
     total_pending: number
   }
+  trends?: TrendDataPoint[]
   isLoading: boolean
   onStart: () => void
   onResume: () => void
+  onStartFiltered: (sourceId: string) => void
 }
 
-function ReviewDashboard({ dashboard, resumeInfo, isLoading, onStart, onResume }: ReviewDashboardProps) {
+function ReviewDashboard({
+  dashboard,
+  resumeInfo,
+  trends,
+  isLoading,
+  onStart,
+  onResume,
+  onStartFiltered,
+}: ReviewDashboardProps) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -251,6 +393,9 @@ function ReviewDashboard({ dashboard, resumeInfo, isLoading, onStart, onResume }
         />
       </div>
 
+      {/* Trend Chart */}
+      {trends && trends.length > 0 && <ReviewTrendChart data={trends} />}
+
       {/* Number review alert */}
       {dashboard?.needs_number_review_count ? (
         <div className="flex items-center gap-3 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
@@ -266,18 +411,32 @@ function ReviewDashboard({ dashboard, resumeInfo, isLoading, onStart, onResume }
         </div>
       ) : null}
 
-      {/* By Source */}
+      {/* By Source - clickable to start filtered review */}
       {dashboard?.by_source && dashboard.by_source.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Pending by Source</h3>
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              Pending by Source
+              <span className="text-xs text-gray-400 dark:text-gray-500 ml-2 font-normal">
+                Click to review by source
+              </span>
+            </h3>
           </div>
           <div className="divide-y divide-gray-100 dark:divide-gray-700">
             {dashboard.by_source.map((source) => (
-              <div key={source.source_id} className="flex items-center justify-between px-4 py-3">
-                <span className="text-sm text-gray-700 dark:text-gray-300">{source.source_name}</span>
+              <button
+                key={source.source_id}
+                onClick={() => onStartFiltered(source.source_id)}
+                className="flex items-center justify-between px-4 py-3 w-full text-left hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-700 dark:text-gray-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    {source.source_name}
+                  </span>
+                  <Play className="w-3 h-3 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
                 <Badge variant="info">{source.pending_count}</Badge>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -332,6 +491,7 @@ function ReviewDashboard({ dashboard, resumeInfo, isLoading, onStart, onResume }
             { key: 'Ctrl+Enter', action: 'Approve all' },
             { key: '↑ / ↓', action: 'Navigate rows' },
             { key: 'Ctrl+Z', action: 'Undo' },
+            { key: 'DblClick', action: 'Edit cell' },
             { key: 'Esc', action: 'Back to dashboard' },
           ].map(({ key, action }) => (
             <div key={key} className="flex items-center gap-2">
