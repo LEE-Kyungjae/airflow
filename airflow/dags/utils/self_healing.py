@@ -19,6 +19,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 
 from openai import OpenAI
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,55 @@ class SelfHealingEngine:
         self.mongo = mongo_service
         self.retry_schedule = RetrySchedule()
 
+    def _compare_html_structure(self, previous_html: str, current_html: str) -> Dict[str, Any]:
+        """US-006: HTML 구조 변경 비교 분석"""
+        prev_soup = BeautifulSoup(previous_html, 'lxml')
+        curr_soup = BeautifulSoup(current_html, 'lxml')
+
+        changes = {
+            'structure_changed': False,
+            'changed_selectors': [],
+            'removed_elements': [],
+            'added_elements': [],
+            'class_changes': [],
+            'tag_count_diff': {},
+        }
+
+        # ID 기반 비교
+        prev_ids = {tag.get('id') for tag in prev_soup.find_all(id=True)}
+        curr_ids = {tag.get('id') for tag in curr_soup.find_all(id=True)}
+        changes['removed_elements'] = list(prev_ids - curr_ids)[:20]
+        changes['added_elements'] = list(curr_ids - prev_ids)[:20]
+
+        # 클래스 비교
+        prev_classes = set()
+        for tag in prev_soup.find_all(class_=True):
+            for cls in tag.get('class', []):
+                prev_classes.add(cls)
+        curr_classes = set()
+        for tag in curr_soup.find_all(class_=True):
+            for cls in tag.get('class', []):
+                curr_classes.add(cls)
+        changes['class_changes'] = list(prev_classes - curr_classes)[:20]
+
+        # 주요 태그 수 변화
+        for tag_name in ['table', 'tr', 'td', 'div', 'a', 'li', 'article', 'section']:
+            prev_count = len(prev_soup.find_all(tag_name))
+            curr_count = len(curr_soup.find_all(tag_name))
+            if prev_count != curr_count:
+                changes['tag_count_diff'][tag_name] = {
+                    'before': prev_count, 'after': curr_count
+                }
+
+        # 구조 변경 판단
+        changes['structure_changed'] = (
+            len(changes['removed_elements']) > 0 or
+            len(changes['class_changes']) > 5 or
+            len(changes['tag_count_diff']) > 3
+        )
+
+        return changes
+
     async def diagnose(
         self,
         source_id: str,
@@ -134,7 +184,8 @@ class SelfHealingEngine:
         error_message: str,
         stack_trace: str,
         html_snapshot: str = "",
-        last_success_data: Optional[Dict] = None
+        last_success_data: Optional[Dict] = None,
+        previous_html: str = ""
     ) -> HealingSession:
         """
         오류 진단 시작
@@ -168,6 +219,19 @@ class SelfHealingEngine:
         diagnosis = await self._perform_diagnosis(
             error_code, error_message, stack_trace, html_snapshot
         )
+
+        # US-006: HTML 스냅샷 비교 (이전 HTML이 있으면)
+        if previous_html and html_snapshot:
+            html_diff = self._compare_html_structure(previous_html, html_snapshot)
+            diagnosis['html_diff'] = html_diff
+            if html_diff.get('structure_changed'):
+                diagnosis['category'] = ErrorCategory.STRUCTURE_CHANGED.value
+                diagnosis['root_cause'] = (
+                    f"사이트 구조 변경 감지: "
+                    f"제거된 요소 {len(html_diff['removed_elements'])}개, "
+                    f"변경된 클래스 {len(html_diff['class_changes'])}개"
+                )
+
         session.diagnosis = diagnosis
 
         # 2단계: 출처 업데이트 확인 필요한 경우
@@ -639,7 +703,6 @@ JSON만 출력하세요."""
 
     def _generate_pattern_hash(self, error_message: str) -> str:
         """에러 패턴 해시 생성"""
-        # 동적 부분 제거 후 해시
         import re
         normalized = re.sub(r'\d+', 'N', error_message.lower())
         normalized = re.sub(r'0x[a-f0-9]+', 'ADDR', normalized)
@@ -647,6 +710,215 @@ JSON만 출력하세요."""
         normalized = re.sub(r'at \d+:\d+', 'at N:N', normalized)
 
         return hashlib.md5(normalized.encode()).hexdigest()[:12]
+
+    async def auto_learn_from_success(
+        self,
+        session: HealingSession,
+        new_code: str,
+        test_success: bool
+    ) -> Optional[str]:
+        """US-007: 성공한 수정을 자동으로 Wellknown Case화"""
+        if not test_success or not self.mongo:
+            return None
+
+        pattern_hash = self._generate_pattern_hash(session.error_message)
+        existing = self.mongo.db.wellknown_cases.find_one({
+            'error_pattern': pattern_hash
+        })
+
+        if existing:
+            self.mongo.db.wellknown_cases.update_one(
+                {'_id': existing['_id']},
+                {
+                    '$inc': {'success_count': 1},
+                    '$set': {
+                        'last_used': datetime.utcnow(),
+                        'solution_code': new_code,
+                    }
+                }
+            )
+            logger.info(f"Updated existing wellknown case: {existing['_id']}")
+            return str(existing['_id'])
+
+        return await self.register_wellknown_case(
+            session=session,
+            solution_code=new_code,
+            description=f"Auto-learned from session {session.session_id}",
+            created_by='ai_auto_learn'
+        )
+
+
+class MultiStageHealingPipeline:
+    """US-008: 다단계 치유 파이프라인
+
+    Stage 1: Rule-based quick fixes (selector update, retry logic, rate limit)
+    Stage 2: Wellknown Case matching + application
+    Stage 3: AI-based full code regeneration
+    """
+
+    def __init__(self, engine: SelfHealingEngine):
+        self.engine = engine
+
+    async def execute(
+        self,
+        session: HealingSession,
+        current_code: str,
+        html_snapshot: str = "",
+        previous_html: str = ""
+    ) -> Tuple[bool, str, Optional[str], str]:
+        """
+        다단계 치유 실행
+
+        Returns: (success, message, new_code, stage_used)
+        """
+        # Stage 1: Rule-based fixes
+        success, msg, code = await self._stage_rule_based(
+            session, current_code, html_snapshot, previous_html
+        )
+        if success:
+            return True, msg, code, "rule_based"
+
+        # Stage 2: Wellknown case
+        success, msg, code = await self._stage_wellknown(session, current_code)
+        if success:
+            return True, msg, code, "wellknown_case"
+
+        # Stage 3: AI regeneration
+        success, msg, code = await self.engine.attempt_healing(
+            session, current_code, html_snapshot
+        )
+        if success:
+            return True, msg, code, "ai_regeneration"
+
+        return False, "모든 치유 단계 실패", None, "all_failed"
+
+    async def _stage_rule_based(
+        self,
+        session: HealingSession,
+        current_code: str,
+        html_snapshot: str,
+        previous_html: str
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Stage 1: 규칙 기반 빠른 수정"""
+        diagnosis = session.diagnosis or {}
+        category = diagnosis.get('category', '')
+
+        # Network error → add retry logic
+        if category == 'network_error':
+            new_code = self._add_retry_logic(current_code)
+            return True, "네트워크 에러: 재시도 로직 추가", new_code
+
+        # Rate limited → add delay
+        if category == 'rate_limited':
+            new_code = self._add_rate_limit_handling(current_code)
+            return True, "요청 제한: 딜레이 추가", new_code
+
+        # Selector broken + HTML available → try auto-fix
+        if category in ('selector_broken', 'structure_changed') and html_snapshot:
+            if previous_html:
+                html_diff = self.engine._compare_html_structure(previous_html, html_snapshot)
+                if html_diff.get('structure_changed'):
+                    new_code = self._update_selectors(current_code, html_diff, html_snapshot)
+                    if new_code != current_code:
+                        return True, "셀렉터 구조 변경 감지: 자동 업데이트", new_code
+
+        return False, "규칙 기반 수정 해당 없음", None
+
+    def _add_retry_logic(self, code: str) -> str:
+        """재시도 로직 추가"""
+        import_line = "import time\n"
+        retry_wrapper = '''
+def _retry_request(url, headers, max_retries=3, delay=2):
+    """Retry wrapper for HTTP requests"""
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            return response
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+            else:
+                raise
+
+'''
+        if 'import time' not in code:
+            code = import_line + code
+        if '_retry_request' not in code:
+            idx = code.find('def crawl_')
+            if idx > 0:
+                code = code[:idx] + retry_wrapper + code[idx:]
+
+        code = code.replace(
+            'requests.get(url, headers=headers, timeout=30)',
+            '_retry_request(url, headers)'
+        )
+        return code
+
+    def _add_rate_limit_handling(self, code: str) -> str:
+        """요청 제한 처리 추가"""
+        if 'import time' not in code:
+            code = "import time\n" + code
+        if 'import random' not in code:
+            code = "import random\n" + code
+
+        code = code.replace(
+            'response = requests.get(',
+            'time.sleep(random.uniform(1, 3))  # Rate limit delay\n        response = requests.get('
+        )
+        return code
+
+    def _update_selectors(self, code: str, html_diff: Dict[str, Any], current_html: str) -> str:
+        """HTML diff 기반 셀렉터 업데이트"""
+        import re as _re
+
+        selector_pattern = r"select(?:_one)?\(['\"]([^'\"]+)['\"]\)"
+        selectors = _re.findall(selector_pattern, code)
+
+        if not selectors:
+            return code
+
+        soup = BeautifulSoup(current_html, 'lxml')
+
+        for old_selector in selectors:
+            results = soup.select(old_selector)
+            if not results:
+                for removed_class in html_diff.get('class_changes', []):
+                    if removed_class in old_selector:
+                        new_selector = old_selector.replace(f'.{removed_class}', '*')
+                        test = soup.select(new_selector)
+                        if test:
+                            code = code.replace(old_selector, new_selector)
+                            break
+
+        return code
+
+    async def _stage_wellknown(
+        self,
+        session: HealingSession,
+        current_code: str
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Stage 2: Wellknown Case 매칭"""
+        if not session.matched_case:
+            matched = await self.engine._match_wellknown_case(
+                session.diagnosis or {},
+                session.error_message,
+                session.stack_trace
+            )
+            if matched:
+                session.matched_case = matched.case_id
+
+        if session.matched_case:
+            case = await self.engine._get_wellknown_case(session.matched_case)
+            if case and case.success_rate >= 0.6:
+                success, new_code = await self.engine._apply_wellknown_solution(
+                    case, current_code, session.diagnosis or {}
+                )
+                if success:
+                    await self.engine._update_case_stats(case.case_id, success=True)
+                    return True, f"Wellknown Case 적용 (성공률 {case.success_rate:.0%})", new_code
+
+        return False, "매칭되는 Wellknown Case 없음", None
 
 
 class HealingOrchestrator:
@@ -665,7 +937,8 @@ class HealingOrchestrator:
         stack_trace: str,
         current_code: str,
         html_snapshot: str = "",
-        url: str = ""
+        url: str = "",
+        **kwargs
     ) -> Dict[str, Any]:
         """
         전체 치유 파이프라인 실행
@@ -718,30 +991,32 @@ class HealingOrchestrator:
                 result['next_action'] = 'wait_retry'
                 return result
 
-        # 3. AI 해결 시도
+        # 3. 다단계 치유 파이프라인 실행 (US-008)
         if session.status == HealingStatus.AI_SOLVING:
-            success, message, new_code = await self.engine.attempt_healing(
+            pipeline = MultiStageHealingPipeline(self.engine)
+            success, message, new_code, stage_used = await pipeline.execute(
                 session=session,
                 current_code=current_code,
-                html_snapshot=html_snapshot
+                html_snapshot=html_snapshot,
+                previous_html=kwargs.get('previous_html', ''),
             )
 
             result['success'] = success
             result['message'] = message
             result['new_code'] = new_code
             result['status'] = session.status.value
+            result['stage_used'] = stage_used
 
             if success and new_code:
                 result['next_action'] = 'apply_and_test'
 
-                # 성공 시 Wellknown Case 등록
-                if not session.matched_case:
-                    case_id = await self.engine.register_wellknown_case(
-                        session=session,
-                        solution_code=new_code,
-                        description=f"Auto-fixed: {error_code}",
-                        created_by='ai'
-                    )
+                # US-007: 성공 시 자동 학습
+                case_id = await self.engine.auto_learn_from_success(
+                    session=session,
+                    new_code=new_code,
+                    test_success=True
+                )
+                if case_id:
                     result['new_case_id'] = case_id
 
             elif session.status == HealingStatus.WAITING_ADMIN:

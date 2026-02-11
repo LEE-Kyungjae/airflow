@@ -13,10 +13,15 @@ from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from bson import ObjectId
 
-from app.core import get_logger
-from app.services.alerts import AlertDispatcher, AlertSeverity
-
-logger = get_logger(__name__)
+try:
+    from app.core import get_logger
+    from app.services.alerts import AlertDispatcher, AlertSeverity
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+    AlertDispatcher = None
+    AlertSeverity = None
 
 
 class AlertCondition(str, Enum):

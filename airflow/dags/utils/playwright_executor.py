@@ -432,6 +432,100 @@ class PlaywrightExecutor:
             }
         )
 
+    async def _handle_authentication(
+        self,
+        crawler: PlaywrightCrawler,
+        source_config: SourceConfig
+    ) -> bool:
+        """
+        Handle authentication before crawling.
+
+        Supports:
+        - cookie: Inject cookies directly
+        - session: Set session storage/local storage values
+        - login_form: Fill and submit a login form
+        - header: Set custom auth headers (e.g., Bearer token)
+
+        Args:
+            crawler: Active crawler instance
+            source_config: Source config with auth_config
+
+        Returns:
+            True if authentication succeeded
+        """
+        if not source_config.requires_auth or not source_config.auth_config:
+            return True
+
+        auth = source_config.auth_config
+        auth_type = auth.get('type', 'cookie')
+
+        try:
+            if auth_type == 'cookie':
+                # Inject cookies
+                cookies = auth.get('cookies', [])
+                if isinstance(cookies, list):
+                    for cookie in cookies:
+                        await crawler.page.context.add_cookies([cookie])
+                logger.info(f"Injected {len(cookies)} cookies for {source_config.source_id}")
+
+            elif auth_type == 'session':
+                # Set session/local storage
+                storage_items = auth.get('storage', {})
+                for key, value in storage_items.items():
+                    await crawler.page.evaluate(
+                        f"window.sessionStorage.setItem('{key}', '{value}')"
+                    )
+                local_items = auth.get('local_storage', {})
+                for key, value in local_items.items():
+                    await crawler.page.evaluate(
+                        f"window.localStorage.setItem('{key}', '{value}')"
+                    )
+                logger.info(f"Set storage items for {source_config.source_id}")
+
+            elif auth_type == 'login_form':
+                # Navigate to login page and fill form
+                login_url = auth.get('login_url', source_config.url)
+                await crawler.navigate(login_url)
+
+                # Wait for login form
+                form_selector = auth.get('form_selector', 'form')
+                await crawler.page.wait_for_selector(form_selector, timeout=10000)
+
+                # Fill credentials
+                username_selector = auth.get('username_selector', 'input[name="username"]')
+                password_selector = auth.get('password_selector', 'input[name="password"]')
+                submit_selector = auth.get('submit_selector', 'button[type="submit"]')
+
+                await crawler.page.fill(username_selector, auth.get('username', ''))
+                await crawler.page.fill(password_selector, auth.get('password', ''))
+                await crawler.page.click(submit_selector)
+
+                # Wait for navigation after login
+                await crawler.page.wait_for_load_state('networkidle', timeout=15000)
+
+                # Verify login success
+                success_indicator = auth.get('success_indicator')
+                if success_indicator:
+                    try:
+                        await crawler.page.wait_for_selector(success_indicator, timeout=5000)
+                    except Exception:
+                        logger.warning(f"Login success indicator not found: {success_indicator}")
+                        return False
+
+                logger.info(f"Login form submitted for {source_config.source_id}")
+
+            elif auth_type == 'header':
+                # Set custom headers
+                headers = auth.get('headers', {})
+                await crawler.page.set_extra_http_headers(headers)
+                logger.info(f"Set auth headers for {source_config.source_id}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Authentication failed for {source_config.source_id}: {e}")
+            return False
+
     async def _execute_crawl(
         self,
         crawler_class: Type[PlaywrightCrawler],
@@ -445,6 +539,22 @@ class PlaywrightExecutor:
 
         async with crawler_class(config) as crawler:
             try:
+                # Handle authentication if required
+                if source_config.requires_auth:
+                    auth_success = await self._handle_authentication(crawler, source_config)
+                    if not auth_success:
+                        return ExecutionResult(
+                            success=False,
+                            source_id=source_config.source_id,
+                            url=source_config.url,
+                            crawler_type=crawler_type.value,
+                            data=[],
+                            record_count=0,
+                            error_code='E007',
+                            error_message='Authentication failed',
+                            metadata={'auth_type': source_config.auth_config.get('type', 'unknown') if source_config.auth_config else 'none'}
+                        )
+
                 # Handle different crawler types
                 if crawler_type == CrawlerType.DYNAMIC_TABLE:
                     result = await self._execute_table_crawl(crawler, source_config)

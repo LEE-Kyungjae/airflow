@@ -43,5 +43,9 @@ dist/
 .coverage
 htmlcov/
 
+# Claude Code / OMC
+.claude/
+.omc/
+
 # Misc
 nul

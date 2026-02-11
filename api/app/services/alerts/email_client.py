@@ -12,10 +12,13 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from typing import List, Optional
 
-from app.core import get_logger
+try:
+    from app.core import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from .throttle import AlertSeverity
-
-logger = get_logger(__name__)
 
 
 class EmailClient:

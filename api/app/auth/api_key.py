@@ -1,6 +1,7 @@
 """
 API Key 기반 인증
 간단하고 빠른 서비스 간 통신용
+MongoDB 영속화 지원 (fallback: in-memory)
 """
 
 import os
@@ -46,13 +47,73 @@ class APIKeyInfo:
 
 
 class APIKeyAuth:
-    """API Key 인증 관리자"""
+    """API Key 인증 관리자 (MongoDB 영속화 지원)"""
 
     # 환경 변수에서 마스터 키 로드 (쉼표로 구분된 여러 키 지원)
     MASTER_KEYS: List[str] = []
 
-    # 메모리 내 API 키 저장소 (프로덕션에서는 DB 사용)
+    # API 키 저장소: in-memory 캐시 + MongoDB 영속화
     _keys: dict = {}
+    _db_collection = None  # MongoDB api_keys 컬렉션
+
+    @classmethod
+    def _init_db(cls):
+        """MongoDB 연결 초기화 (실패 시 in-memory fallback)"""
+        try:
+            from pymongo import MongoClient
+            uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+            db_name = os.getenv("MONGODB_DATABASE", "crawler_system")
+            client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+            client.server_info()  # 연결 테스트
+            db = client[db_name]
+            cls._db_collection = db["api_keys"]
+            cls._db_collection.create_index("key_id", unique=True)
+            cls._db_collection.create_index("hashed_key")
+            logger.info("APIKeyAuth: MongoDB api_keys 컬렉션 연결 성공")
+            # 기존 키 로드
+            for doc in cls._db_collection.find():
+                key_info = APIKeyInfo(
+                    key_id=doc["key_id"],
+                    name=doc["name"],
+                    hashed_key=doc["hashed_key"],
+                    created_at=doc["created_at"],
+                    expires_at=doc.get("expires_at"),
+                    scopes=doc.get("scopes", ["read"]),
+                    is_active=doc.get("is_active", True),
+                    last_used_at=doc.get("last_used_at"),
+                    rate_limit=doc.get("rate_limit", 1000),
+                )
+                cls._keys[key_info.hashed_key] = key_info
+            logger.info(f"APIKeyAuth: MongoDB에서 {len(cls._keys)}개 API 키 로드")
+        except Exception as e:
+            cls._db_collection = None
+            logger.info(f"APIKeyAuth: MongoDB 미연결, in-memory 모드 ({e})")
+
+    @classmethod
+    def _persist_key(cls, key_info: APIKeyInfo):
+        """API 키를 MongoDB에 영속화"""
+        if cls._db_collection is None:
+            return
+        try:
+            doc = {
+                "key_id": key_info.key_id,
+                "name": key_info.name,
+                "hashed_key": key_info.hashed_key,
+                "created_at": key_info.created_at,
+                "expires_at": key_info.expires_at,
+                "scopes": key_info.scopes,
+                "is_active": key_info.is_active,
+                "last_used_at": key_info.last_used_at,
+                "rate_limit": key_info.rate_limit,
+                "updated_at": datetime.utcnow(),
+            }
+            cls._db_collection.update_one(
+                {"key_id": key_info.key_id},
+                {"$set": doc, "$setOnInsert": {"registered_at": datetime.utcnow()}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning(f"APIKeyAuth: 키 영속화 실패 ({key_info.key_id}): {e}")
 
     @classmethod
     def init(cls):
@@ -78,6 +139,9 @@ class APIKeyAuth:
             logger.warning(f"개발용 임시 API 키 생성됨: {temp_key[:20]}...")
             logger.warning("프로덕션에서는 API_MASTER_KEYS 환경변수 설정 필요!")
 
+        # MongoDB 연결 시도
+        cls._init_db()
+
     @classmethod
     def generate_key(cls) -> str:
         """새 API 키 생성"""
@@ -97,7 +161,7 @@ class APIKeyAuth:
         rate_limit: int = 1000
     ) -> tuple:
         """
-        새 API 키 등록
+        새 API 키 등록 (in-memory + MongoDB 영속화)
 
         Returns:
             (key_id, raw_api_key) - raw_api_key는 한 번만 반환됨
@@ -121,6 +185,7 @@ class APIKeyAuth:
         )
 
         cls._keys[hashed_key] = key_info
+        cls._persist_key(key_info)
 
         logger.info(f"API 키 등록: {key_id} ({name})")
 
@@ -128,7 +193,7 @@ class APIKeyAuth:
 
     @classmethod
     def validate_key(cls, api_key: str) -> Optional[APIKeyInfo]:
-        """API 키 검증"""
+        """API 키 검증 (캐시 → MongoDB fallback)"""
         if not api_key:
             return None
 
@@ -143,9 +208,29 @@ class APIKeyAuth:
                 is_active=True
             )
 
-        # 등록된 키 확인
+        # 1. in-memory 캐시 확인
         hashed = cls.hash_key(api_key)
         key_info = cls._keys.get(hashed)
+
+        # 2. MongoDB fallback
+        if not key_info and cls._db_collection is not None:
+            try:
+                doc = cls._db_collection.find_one({"hashed_key": hashed})
+                if doc:
+                    key_info = APIKeyInfo(
+                        key_id=doc["key_id"],
+                        name=doc["name"],
+                        hashed_key=doc["hashed_key"],
+                        created_at=doc["created_at"],
+                        expires_at=doc.get("expires_at"),
+                        scopes=doc.get("scopes", ["read"]),
+                        is_active=doc.get("is_active", True),
+                        last_used_at=doc.get("last_used_at"),
+                        rate_limit=doc.get("rate_limit", 1000),
+                    )
+                    cls._keys[hashed] = key_info  # 캐시 갱신
+            except Exception as e:
+                logger.warning(f"APIKeyAuth: MongoDB 키 조회 실패: {e}")
 
         if not key_info:
             return None
@@ -158,22 +243,72 @@ class APIKeyAuth:
 
         # 마지막 사용 시간 업데이트
         key_info.last_used_at = datetime.utcnow()
+        # 비동기적으로 MongoDB에 last_used_at 갱신
+        if cls._db_collection is not None:
+            try:
+                cls._db_collection.update_one(
+                    {"hashed_key": hashed},
+                    {"$set": {"last_used_at": key_info.last_used_at}},
+                )
+            except Exception:
+                pass  # last_used_at 갱신 실패는 무시
 
         return key_info
 
     @classmethod
     def revoke_key(cls, key_id: str) -> bool:
-        """API 키 폐기"""
+        """API 키 폐기 (in-memory + MongoDB)"""
         for hashed, info in cls._keys.items():
             if info.key_id == key_id:
                 info.is_active = False
+                # MongoDB 반영
+                if cls._db_collection is not None:
+                    try:
+                        cls._db_collection.update_one(
+                            {"key_id": key_id},
+                            {"$set": {"is_active": False, "revoked_at": datetime.utcnow()}},
+                        )
+                    except Exception as e:
+                        logger.warning(f"APIKeyAuth: MongoDB 키 폐기 반영 실패 ({key_id}): {e}")
                 logger.info(f"API 키 폐기: {key_id}")
                 return True
+
+        # in-memory에 없으면 MongoDB에서 시도
+        if cls._db_collection is not None:
+            try:
+                result = cls._db_collection.update_one(
+                    {"key_id": key_id},
+                    {"$set": {"is_active": False, "revoked_at": datetime.utcnow()}},
+                )
+                if result.modified_count > 0:
+                    logger.info(f"API 키 폐기 (MongoDB): {key_id}")
+                    return True
+            except Exception as e:
+                logger.warning(f"APIKeyAuth: MongoDB 키 폐기 실패 ({key_id}): {e}")
+
         return False
 
     @classmethod
     def list_keys(cls) -> List[dict]:
         """등록된 API 키 목록 (해시 제외)"""
+        # MongoDB 우선, fallback to in-memory
+        if cls._db_collection is not None:
+            try:
+                keys = []
+                for doc in cls._db_collection.find({}, {"hashed_key": 0, "_id": 0}):
+                    keys.append({
+                        "key_id": doc["key_id"],
+                        "name": doc["name"],
+                        "scopes": doc.get("scopes", ["read"]),
+                        "created_at": doc["created_at"].isoformat() if isinstance(doc["created_at"], datetime) else str(doc["created_at"]),
+                        "expires_at": doc["expires_at"].isoformat() if doc.get("expires_at") and isinstance(doc["expires_at"], datetime) else None,
+                        "is_active": doc.get("is_active", True),
+                        "last_used_at": doc["last_used_at"].isoformat() if doc.get("last_used_at") and isinstance(doc["last_used_at"], datetime) else None,
+                    })
+                return keys
+            except Exception as e:
+                logger.warning(f"APIKeyAuth: MongoDB 키 목록 조회 실패: {e}")
+
         return [
             {
                 "key_id": info.key_id,

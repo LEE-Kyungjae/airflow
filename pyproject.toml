@@ -3,7 +3,7 @@ name = "airflow-crawler-system"
 version = "1.0.0"
 description = "AI-powered web crawling automation system with Airflow orchestration"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Crawler System Team"}

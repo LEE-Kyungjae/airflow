@@ -1,0 +1,165 @@
+# Prometheus Alert Rules for Crawler System
+# Enterprise-grade alerting for crawl operations, API health, and infrastructure
+# Metric names align with etl_* metrics exported by api/app/services/observability/prometheus.py
+
+groups:
+  # ============================================
+  # Crawl Operation Alerts
+  # ============================================
+  - name: crawl_operations
+    rules:
+      - alert: CrawlFailureRateHigh
+        expr: |
+          (
+            sum(rate(etl_pipeline_executions_total{status="failed"}[15m]))
+            /
+            sum(rate(etl_pipeline_executions_total[15m]))
+          ) > 0.3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crawl failure rate exceeds 30%"
+          description: "Crawl failure rate is {{ $value | humanizePercentage }} over the last 15 minutes."
+
+      - alert: CrawlZeroRecords
+        expr: |
+          etl_records_processed_total == 0
+          and
+          etl_pipeline_executions_total{status="success"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Crawler returning zero records"
+          description: "A crawler completed successfully but returned 0 records for 10+ minutes."
+
+      - alert: CrawlDurationExceeded
+        expr: histogram_quantile(0.95, sum(rate(etl_pipeline_execution_duration_seconds_bucket[15m])) by (le)) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Crawl duration p95 exceeds 5 minutes"
+          description: "95th percentile crawl duration is {{ $value | humanizeDuration }}."
+
+  # ============================================
+  # API Health Alerts
+  # ============================================
+  - name: api_health
+    rules:
+      - alert: APIHighLatency
+        expr: etl_processing_latency_seconds > 5
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API processing latency exceeds 5 seconds"
+          description: "Processing latency is {{ $value | humanizeDuration }}."
+
+      - alert: APIHighErrorRate
+        expr: |
+          (
+            sum(rate(etl_pipeline_executions_total{status="failed"}[5m]))
+            /
+            sum(rate(etl_pipeline_executions_total[5m]))
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error rate exceeds 5%"
+          description: "API error rate is {{ $value | humanizePercentage }}."
+
+      - alert: APIDown
+        expr: up{job="etl-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ETL API is down"
+          description: "The API server has been unreachable for more than 1 minute."
+
+  # ============================================
+  # MongoDB Alerts
+  # ============================================
+  - name: mongodb_health
+    rules:
+      - alert: MongoDBConnectionFailure
+        expr: etl_mongodb_connection_status == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MongoDB connection lost"
+          description: "MongoDB has been unreachable for more than 1 minute."
+
+  # ============================================
+  # Infrastructure Alerts
+  # ============================================
+  - name: infrastructure
+    rules:
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes / 1024 / 1024 > 512
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Process memory usage is {{ $value | humanize }}MB."
+
+      - alert: DiskSpaceRunningLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space below 20%"
+          description: "Available disk space is {{ $value | humanizePercentage }}."
+
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target is down"
+          description: "Target {{ $labels.job }} / {{ $labels.instance }} is unreachable."
+
+  # ============================================
+  # Self-Healing Alerts
+  # ============================================
+  - name: self_healing
+    rules:
+      - alert: SelfHealingLowSuccessRate
+        expr: etl_healing_success_rate < 0.5
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Self-healing success rate below 50%"
+          description: "Healing success rate is {{ $value | humanizePercentage }} over the last 15 minutes."
+
+      - alert: ErrorRateRequiresIntervention
+        expr: |
+          (
+            sum(rate(etl_pipeline_executions_total{status="failed"}[30m]))
+            /
+            sum(rate(etl_pipeline_executions_total[30m]))
+          ) > 0.5
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Error rate exceeds 50% - manual intervention needed"
+          description: "Sustained high error rate of {{ $value | humanizePercentage }} despite self-healing."
+
+      - alert: SystemHealthCritical
+        expr: etl_system_health_score < 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "System health score critically low"
+          description: "System health score is {{ $value | humanizePercentage }}."

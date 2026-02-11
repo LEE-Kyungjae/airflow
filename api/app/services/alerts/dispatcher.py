@@ -9,7 +9,12 @@ import asyncio
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-from app.core import get_logger
+try:
+    from app.core import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from .throttle import AlertThrottle, AlertSeverity
 from .email_client import EmailClient
 from .slack_client import SlackClient

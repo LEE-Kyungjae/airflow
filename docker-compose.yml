@@ -36,12 +36,18 @@ x-airflow-common:
     BACKUP_VERIFY: ${BACKUP_VERIFY:-true}
     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    # Playwright configuration
+    PLAYWRIGHT_BROWSERS_PATH: /home/airflow/.cache/ms-playwright
+    PLAYWRIGHT_CHROMIUM_HEADLESS: '1'
+    AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+    AI_BASE_URL: ${AI_BASE_URL:-}
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       openai
       pymongo
       requests
       beautifulsoup4
       selenium
+      playwright
       pdfplumber
       pandas
       openpyxl
@@ -279,6 +285,7 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'

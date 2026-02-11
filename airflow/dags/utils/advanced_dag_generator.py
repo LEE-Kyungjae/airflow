@@ -323,6 +323,11 @@ def load_data(**context) -> Dict[str, Any]:
 def validate_quality(**context) -> Dict[str, Any]:
     """
     Step 4: Validate - 데이터 품질 검증
+
+    실제 DataValidator를 사용하여 규칙 기반 검증 수행:
+    - 인코딩, 날짜, 필수필드, 범위, 포맷, 고유값 검증
+    - 검증 결과를 MongoDB에 저장
+    - 이전 실행과 데이터 양 비교
     """
     ti = context['ti']
     transform_result = ti.xcom_pull(task_ids='transform')
@@ -332,8 +337,12 @@ def validate_quality(**context) -> Dict[str, Any]:
     validation_result = {{
         'success': True,
         'issues': [],
-        'warnings': []
+        'warnings': [],
+        'quality_score': 100.0,
+        'field_stats': {{}},
     }}
+
+    # === 기본 파이프라인 체크 (기존 유지) ===
 
     # 변환 품질 체크
     avg_quality = transform_result.get('avg_quality_score', 0)
@@ -350,9 +359,64 @@ def validate_quality(**context) -> Dict[str, Any]:
     if load_errors:
         validation_result['issues'].extend(load_errors[:5])
 
-    # 데이터 양 체크 (이전 실행과 비교)
+    # === 규칙 기반 데이터 품질 검증 ===
+
     mongo = MongoService()
     try:
+        # 소스 설정에서 필드 정보 로드
+        source_doc = mongo.db.sources.find_one({{'_id': SOURCE_ID}})
+        if not source_doc:
+            source_doc = mongo.db.sources.find_one({{'source_id': SOURCE_ID}})
+
+        # 로드된 데이터 조회 (최근 배치)
+        collection_name = load_result.get('collection', f'data_{{SOURCE_ID}}')
+        loaded_records = list(mongo.db[collection_name].find(
+            {{'_meta.run_id': run_id}}
+        ).limit(1000))
+
+        if loaded_records and source_doc:
+            try:
+                # DataValidator를 사용한 규칙 기반 검증
+                sys.path.insert(0, '/opt/airflow/api')
+                from app.services.data_quality.validator import DataValidator
+
+                source_config = {{
+                    'fields': source_doc.get('fields', FIELDS),
+                }}
+                validator = DataValidator.create_for_source(source_config)
+                result = validator.validate_batch(loaded_records, SOURCE_ID, run_id)
+
+                validation_result['quality_score'] = result.quality_score
+                validation_result['field_stats'] = result.field_stats
+
+                # 이슈를 문자열로 변환하여 추가
+                for issue in result.issues[:50]:
+                    issue_msg = f"[{{issue.severity.value}}] {{issue.field_name}}: {{issue.message}}"
+                    if issue.severity.value in ('error', 'critical'):
+                        validation_result['issues'].append(issue_msg)
+                    else:
+                        validation_result['warnings'].append(issue_msg)
+
+                # 검증 결과를 MongoDB에 저장
+                mongo.db.quality_results.insert_one({{
+                    'source_id': SOURCE_ID,
+                    'run_id': run_id,
+                    'quality_score': result.quality_score,
+                    'total_records': result.total_records,
+                    'is_valid': result.is_valid,
+                    'issue_summary': result.issue_count_by_severity,
+                    'field_stats': result.field_stats,
+                    'validated_at': datetime.utcnow(),
+                }})
+
+                logger.info(f"[{{run_id}}] Data quality score: {{result.quality_score}}, issues: {{len(result.issues)}}")
+
+            except ImportError:
+                logger.warning(f"[{{run_id}}] DataValidator not available, using basic validation only")
+            except Exception as e:
+                logger.warning(f"[{{run_id}}] Data quality validation error: {{e}}, using basic validation only")
+
+        # 데이터 양 체크 (이전 실행과 비교)
         recent_results = list(mongo.db.crawl_results.find(
             {{'source_id': SOURCE_ID, 'status': 'success'}},
             {{'record_count': 1}}

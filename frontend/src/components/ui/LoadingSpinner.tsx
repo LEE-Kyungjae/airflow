@@ -14,7 +14,7 @@ const sizeStyles = {
 
 export function LoadingSpinner({ size = 'md', className }: LoadingSpinnerProps) {
   return (
-    <Loader2 className={cn('animate-spin text-blue-600', sizeStyles[size], className)} />
+    <Loader2 className={cn('animate-spin text-blue-600 dark:text-blue-400', sizeStyles[size], className)} />
   )
 }
 

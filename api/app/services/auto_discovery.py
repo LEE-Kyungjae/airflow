@@ -41,7 +41,8 @@ class PageType(str, Enum):
 class CrawlStrategy(str, Enum):
     """크롤링 전략"""
     STATIC_HTML = "static_html"       # 정적 HTML (requests + bs4)
-    DYNAMIC_JS = "dynamic_js"         # 동적 페이지 (Selenium)
+    DYNAMIC_JS = "dynamic_js"         # 동적 페이지 (Selenium - legacy)
+    PLAYWRIGHT = "playwright"         # 동적 페이지 (Playwright - preferred)
     API_CALL = "api_call"             # API 직접 호출
     FILE_EXTRACT = "file_extract"     # 파일 다운로드 후 추출
     HYBRID = "hybrid"                 # 혼합 전략
@@ -265,23 +266,100 @@ class AutoDiscoveryService:
         return PageType.UNKNOWN
 
     def _check_requires_javascript(self, html: str) -> bool:
-        """JavaScript 필요 여부 확인"""
-        indicators = [
-            'react', 'vue', 'angular', 'next',
-            '__NEXT_DATA__', '__NUXT__', 'window.__INITIAL_STATE__',
-            'data-reactroot', 'ng-app', 'v-app',
-            'Loading...', '로딩중', 'Please wait'
-        ]
+        """
+        JavaScript 렌더링 필요 여부 종합 판별
 
-        html_lower = html.lower()
-
-        # 콘텐츠가 너무 적으면 JS 렌더링 필요
+        다중 신호 기반 점수 시스템:
+        - SPA 프레임워크 감지 (React, Vue, Angular, Svelte, Next.js, Nuxt)
+        - 빈 body / noscript 힌트
+        - 동적 로딩 패턴 (lazy-load, infinite scroll)
+        - hydration 마커
+        - JS 번들 비율
+        """
         soup = BeautifulSoup(html, 'lxml')
-        text_content = soup.get_text(strip=True)
-        if len(text_content) < 500:
-            return True
+        html_lower = html.lower()
+        score = 0  # 임계값 3 이상이면 JS 필요
 
-        return any(ind.lower() in html_lower for ind in indicators)
+        # --- 1. SPA 프레임워크 마커 (강한 신호, +3) ---
+        spa_markers = [
+            'data-reactroot', 'data-reactid', '__react',
+            'ng-app', 'ng-version', 'ng-controller',
+            'data-v-', 'v-app', 'data-server-rendered',
+            'data-svelte', 'svelte-',
+            '__NEXT_DATA__', '__NUXT__', '__GATSBY',
+            'window.__INITIAL_STATE__', 'window.__PRELOADED_STATE__',
+            'window.__APP_DATA__', 'window.__DATA__',
+        ]
+        for marker in spa_markers:
+            if marker in html:
+                score += 3
+                break
+
+        # --- 2. 빈 body 감지 (강한 신호, +3) ---
+        text_content = soup.get_text(strip=True)
+        body = soup.find('body')
+        body_children = list(body.children) if body else []
+        # body에 div#root 또는 div#app 하나만 있고 텍스트 적으면 SPA
+        if body:
+            root_divs = body.find_all('div', id=re.compile(r'^(root|app|__next|__nuxt)$'))
+            if root_divs and len(text_content) < 200:
+                score += 3
+
+        if len(text_content) < 300:
+            score += 2
+
+        # --- 3. noscript 태그에 "enable JavaScript" 류 메시지 (+2) ---
+        noscript = soup.find('noscript')
+        if noscript:
+            ns_text = noscript.get_text(strip=True).lower()
+            js_hints = ['javascript', 'enable', '자바스크립트', '활성화', 'browser']
+            if any(h in ns_text for h in js_hints):
+                score += 2
+
+        # --- 4. 동적 로딩 패턴 (+1 each) ---
+        dynamic_patterns = [
+            'lazy-load', 'data-src=', 'loading="lazy"',
+            'infinite-scroll', 'scroll-load', 'load-more',
+            'skeleton', 'placeholder', 'shimmer',
+            'Loading...', '로딩중', '불러오는 중', 'Please wait',
+            'data-ajax', 'data-fetch', 'data-url',
+        ]
+        for pat in dynamic_patterns:
+            if pat.lower() in html_lower:
+                score += 1
+
+        # --- 5. JS 번들 비율 (+2 if heavy) ---
+        scripts = soup.find_all('script')
+        js_with_src = [s for s in scripts if s.get('src')]
+        inline_js_size = sum(len(s.string or '') for s in scripts if s.string)
+        # 많은 JS 파일 또는 큰 인라인 JS
+        if len(js_with_src) > 10:
+            score += 1
+        if inline_js_size > 5000:
+            score += 1
+
+        # --- 6. SPA 라우터 패턴 (+2) ---
+        router_patterns = [
+            'history.pushstate', 'history.replacestate',
+            'hashchange', 'popstate',
+            'react-router', 'vue-router', '@angular/router',
+        ]
+        for pat in router_patterns:
+            if pat in html_lower:
+                score += 2
+                break
+
+        # --- 7. Webpack / bundler 힌트 (+1) ---
+        bundler_hints = [
+            'webpack', 'chunk', 'bundle.js', 'vendor.js',
+            'app.js', 'main.js', 'runtime.',
+        ]
+        for hint in bundler_hints:
+            if hint in html_lower:
+                score += 1
+                break
+
+        return score >= 3
 
     def _detect_pagination(self, html: str) -> Tuple[bool, Optional[str]]:
         """페이지네이션 감지"""
@@ -317,7 +395,7 @@ class AutoDiscoveryService:
         requires_js: bool,
         headers: Dict
     ) -> CrawlStrategy:
-        """크롤링 전략 결정"""
+        """크롤링 전략 결정 - Playwright 우선"""
         content_type = headers.get('content-type', '').lower()
 
         if 'application/json' in content_type:
@@ -330,7 +408,7 @@ class AutoDiscoveryService:
             return CrawlStrategy.API_CALL
 
         if requires_js or page_type == PageType.DYNAMIC_SPA:
-            return CrawlStrategy.DYNAMIC_JS
+            return CrawlStrategy.PLAYWRIGHT
 
         return CrawlStrategy.STATIC_HTML
 
@@ -549,7 +627,7 @@ JSON만 출력하세요."""
         warnings = []
 
         if requires_js:
-            warnings.append("JavaScript 렌더링이 필요합니다. Selenium이 사용됩니다.")
+            warnings.append("JavaScript 렌더링이 필요합니다. Playwright가 사용됩니다.")
 
         if has_pagination:
             warnings.append("페이지네이션이 감지되었습니다. 전체 데이터 수집을 위해 멀티페이지 크롤링이 필요할 수 있습니다.")

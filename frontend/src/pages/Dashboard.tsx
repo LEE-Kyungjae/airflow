@@ -9,7 +9,6 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { LoadingPage } from '@/components/ui/LoadingSpinner'
 import { getDashboardStats, getExecutionTrends, getSystemHealth } from '@/api/dashboard'
-import { formatNumber, formatMs } from '@/lib/utils'
 import {
   LineChart,
   Line,
@@ -44,7 +43,7 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+      <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -114,7 +113,7 @@ export default function Dashboard() {
                   </LineChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="flex items-center justify-center h-full text-gray-500">
+                <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400">
                   No data available
                 </div>
               )}
@@ -159,18 +158,18 @@ export default function Dashboard() {
                       />
                     </svg>
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-2xl font-bold">{health.overall_score}</span>
+                      <span className="text-2xl font-bold text-gray-900 dark:text-gray-100">{health.overall_score}</span>
                     </div>
                   </div>
                   <div>
-                    <p className="font-medium text-gray-900">
+                    <p className="font-medium text-gray-900 dark:text-gray-100">
                       {health.status === 'healthy'
                         ? 'System Healthy'
                         : health.status === 'degraded'
                         ? 'System Degraded'
                         : 'System Critical'}
                     </p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       {health.active_sources} active, {health.failed_sources} failed
                     </p>
                   </div>
@@ -180,14 +179,14 @@ export default function Dashboard() {
                 <div className="space-y-2">
                   {Object.entries(health.components).map(([name, status]) => (
                     <div key={name} className="flex items-center justify-between">
-                      <span className="text-sm text-gray-600 capitalize">{name}</span>
+                      <span className="text-sm text-gray-600 dark:text-gray-400 capitalize">{name}</span>
                       <span
                         className={`text-sm font-medium ${
                           status === 'healthy'
-                            ? 'text-green-600'
+                            ? 'text-green-600 dark:text-green-400'
                             : status === 'degraded'
-                            ? 'text-yellow-600'
-                            : 'text-red-600'
+                            ? 'text-yellow-600 dark:text-yellow-400'
+                            : 'text-red-600 dark:text-red-400'
                         }`}
                       >
                         {status}
@@ -198,15 +197,15 @@ export default function Dashboard() {
 
                 {/* Alerts */}
                 {health.pending_alerts > 0 && (
-                  <div className="p-3 bg-red-50 rounded-lg">
-                    <p className="text-sm text-red-700">
+                  <div className="p-3 bg-red-50 dark:bg-red-900/30 rounded-lg">
+                    <p className="text-sm text-red-700 dark:text-red-400">
                       {health.pending_alerts} pending alert(s) require attention
                     </p>
                   </div>
                 )}
               </div>
             ) : (
-              <div className="flex items-center justify-center h-48 text-gray-500">
+              <div className="flex items-center justify-center h-48 text-gray-500 dark:text-gray-400">
                 Loading health data...
               </div>
             )}
@@ -228,11 +227,11 @@ interface StatCardProps {
 
 function StatCard({ title, value, subtitle, icon: Icon, color }: StatCardProps) {
   const colorStyles = {
-    blue: 'text-blue-600 bg-blue-50',
-    green: 'text-green-600 bg-green-50',
-    red: 'text-red-600 bg-red-50',
-    purple: 'text-purple-600 bg-purple-50',
-    gray: 'text-gray-600 bg-gray-50',
+    blue: 'text-blue-600 bg-blue-50 dark:text-blue-400 dark:bg-blue-900/30',
+    green: 'text-green-600 bg-green-50 dark:text-green-400 dark:bg-green-900/30',
+    red: 'text-red-600 bg-red-50 dark:text-red-400 dark:bg-red-900/30',
+    purple: 'text-purple-600 bg-purple-50 dark:text-purple-400 dark:bg-purple-900/30',
+    gray: 'text-gray-600 bg-gray-50 dark:text-gray-400 dark:bg-gray-700/50',
   }
 
   return (
@@ -242,9 +241,9 @@ function StatCard({ title, value, subtitle, icon: Icon, color }: StatCardProps) 
           <Icon className="w-6 h-6" />
         </div>
         <div>
-          <p className="text-sm font-medium text-gray-500">{title}</p>
-          <p className="text-2xl font-bold text-gray-900">{value}</p>
-          {subtitle && <p className="text-sm text-gray-500">{subtitle}</p>}
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
+          {subtitle && <p className="text-sm text-gray-500 dark:text-gray-400">{subtitle}</p>}
         </div>
       </CardContent>
     </Card>
