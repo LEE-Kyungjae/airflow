@@ -788,8 +788,8 @@ class ReviewStatusUpdate(BaseModel):
     """
     status: str = Field(
         ...,
-        pattern="^(approved|on_hold|needs_correction|corrected)$",
-        description="New review status: approved, on_hold, needs_correction, or corrected"
+        pattern="^(approved|rejected|on_hold|needs_correction|corrected)$",
+        description="New review status: approved, rejected, on_hold, needs_correction, or corrected"
     )
     corrections: Optional[List[FieldCorrection]] = Field(
         None,
@@ -799,6 +799,16 @@ class ReviewStatusUpdate(BaseModel):
         None,
         max_length=2000,
         description="Reviewer notes or comments"
+    )
+    rejection_reason: Optional[str] = Field(
+        None,
+        pattern="^(data_error|source_changed|source_not_updated|other)$",
+        description="Reason for rejection: data_error, source_changed, source_not_updated, other"
+    )
+    rejection_notes: Optional[str] = Field(
+        None,
+        max_length=2000,
+        description="Additional notes for rejection"
     )
     review_duration_ms: Optional[int] = Field(
         None,

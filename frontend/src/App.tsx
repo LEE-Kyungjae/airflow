@@ -7,6 +7,7 @@ import Monitoring from './pages/Monitoring'
 import DataQuality from './pages/DataQuality'
 import Errors from './pages/Errors'
 import SourceDetail from './pages/SourceDetail'
+import ReviewPage from './pages/ReviewPage'
 import { ToastProvider } from './hooks/useToast'
 import { ToastContainer } from './components/ui/Toast'
 
@@ -22,6 +23,7 @@ function App() {
           <Route path="monitoring" element={<Monitoring />} />
           <Route path="data-quality" element={<DataQuality />} />
           <Route path="errors" element={<Errors />} />
+          <Route path="reviews" element={<ReviewPage />} />
         </Route>
       </Routes>
       <ToastContainer />

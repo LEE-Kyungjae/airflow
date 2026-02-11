@@ -554,6 +554,13 @@ async def update_review(
                     corrected_data[correction.field] = correction.corrected_value
             update_data["corrected_data"] = corrected_data
 
+    # Handle rejection
+    if update.status == "rejected":
+        if update.rejection_reason:
+            update_data["rejection_reason"] = update.rejection_reason
+        if update.rejection_notes:
+            update_data["rejection_notes"] = update.rejection_notes
+
     await db.data_reviews.update_one(
         {"_id": ObjectId(review_id)},
         {"$set": update_data}
@@ -602,6 +609,19 @@ async def update_review(
                     }
                 )
 
+    # Handle rejection post-processing
+    if update.status == "rejected" and update.rejection_reason:
+        from app.services.review_actions import handle_rejection
+        try:
+            await handle_rejection(
+                db=db,
+                review=review,
+                reason=update.rejection_reason,
+                notes=update.rejection_notes
+            )
+        except Exception as e:
+            logger.warning(f"Rejection post-processing failed for review {review_id}: {e}")
+
     # Save reviewer bookmark for resume functionality
     await db.reviewer_bookmarks.update_one(
         {"reviewer_id": reviewer_id},
@@ -613,6 +633,73 @@ async def update_review(
         }},
         upsert=True
     )
+
+    updated = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
+    return serialize_doc(updated)
+
+
+@router.put("/{review_id}/revert")
+async def revert_review(
+    review_id: str,
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_scope("write"))
+):
+    """
+    Revert a review back to pending status.
+
+    If the review was approved and data was promoted to production,
+    this will also rollback the promotion.
+    """
+    reviewer_id = auth.user_id or "anonymous"
+    review = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
+
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    if review["review_status"] == "pending":
+        raise HTTPException(status_code=400, detail="Review is already pending")
+
+    previous_status = review["review_status"]
+
+    # If it was approved/corrected and promoted, rollback production
+    if previous_status in ["approved", "corrected"] and review.get("production_id"):
+        try:
+            promotion_service = get_promotion_service(db)
+            promotion_service.rollback_promotion(
+                production_id=ObjectId(review["production_id"]),
+                reason=f"Review reverted by {reviewer_id}"
+            )
+            logger.info(f"Rolled back production/{review['production_id']} for review {review_id}")
+        except Exception as e:
+            logger.warning(f"Rollback failed for review {review_id}: {e}")
+
+    # Revert to pending
+    await db.data_reviews.update_one(
+        {"_id": ObjectId(review_id)},
+        {"$set": {
+            "review_status": "pending",
+            "reviewer_id": None,
+            "reviewed_at": None,
+            "production_id": None,
+            "promoted_at": None,
+            "updated_at": datetime.utcnow()
+        }, "$push": {
+            "revert_history": {
+                "previous_status": previous_status,
+                "reverted_by": reviewer_id,
+                "reverted_at": datetime.utcnow()
+            }
+        }}
+    )
+
+    # Record in audit log
+    await db.data_lineage.insert_one({
+        "action": "review_reverted",
+        "review_id": review_id,
+        "previous_status": previous_status,
+        "reverted_by": reviewer_id,
+        "timestamp": datetime.utcnow()
+    })
 
     updated = await db.data_reviews.find_one({"_id": ObjectId(review_id)})
     return serialize_doc(updated)
@@ -644,6 +731,74 @@ async def batch_approve(
         "success": True,
         "modified_count": result.modified_count
     }
+
+
+@router.get("/stats/trends")
+async def get_review_trends(
+    days: int = Query(7, ge=1, le=90, description="Number of days to show"),
+    db=Depends(get_db),
+    auth: AuthContext = Depends(require_auth)
+):
+    """
+    Get review trends over time for charting.
+
+    Returns daily counts of approved, corrected, rejected, and on_hold reviews.
+    """
+    from datetime import timedelta
+
+    start_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+
+    pipeline = [
+        {"$match": {
+            "reviewed_at": {"$gte": start_date},
+            "review_status": {"$ne": "pending"}
+        }},
+        {"$group": {
+            "_id": {
+                "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$reviewed_at"}},
+                "status": "$review_status"
+            },
+            "count": {"$sum": 1}
+        }},
+        {"$group": {
+            "_id": "$_id.date",
+            "statuses": {
+                "$push": {"status": "$_id.status", "count": "$count"}
+            },
+            "total": {"$sum": "$count"}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+
+    results = await db.data_reviews.aggregate(pipeline).to_list(None)
+
+    # Build complete date range with defaults
+    trend_data = []
+    for i in range(days):
+        date = start_date + timedelta(days=i)
+        date_str = date.strftime("%Y-%m-%d")
+
+        # Find matching result
+        day_data = next((r for r in results if r["_id"] == date_str), None)
+
+        entry = {
+            "date": date_str,
+            "approved": 0,
+            "corrected": 0,
+            "rejected": 0,
+            "on_hold": 0,
+            "total": 0,
+        }
+
+        if day_data:
+            entry["total"] = day_data["total"]
+            for s in day_data["statuses"]:
+                if s["status"] in entry:
+                    entry[s["status"]] = s["count"]
+
+        trend_data.append(entry)
+
+    return trend_data
 
 
 @router.get("/stats/by-source/{source_id}")
