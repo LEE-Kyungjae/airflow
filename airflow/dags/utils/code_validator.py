@@ -241,11 +241,12 @@ class CodeValidator:
             Tuple of (success, output_or_error)
         """
         # Create test wrapper that imports but doesn't execute
+        escaped_code = code.replace('"""', "'''").replace(chr(92), chr(92)+chr(92))
         test_code = f'''
 import sys
 import ast
 
-code = """{code.replace('"""', "'''").replace(chr(92), chr(92)+chr(92))}"""
+code = """{escaped_code}"""
 
 # Syntax check
 try:

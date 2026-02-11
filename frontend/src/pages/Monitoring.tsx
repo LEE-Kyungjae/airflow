@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Wifi, WifiOff, CheckCircle } from 'lucide-react'
+import { Wifi, WifiOff, CheckCircle } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge, StatusBadge } from '@/components/ui/Badge'
@@ -7,10 +7,12 @@ import { LoadingPage } from '@/components/ui/LoadingSpinner'
 import { getRealtimeStatus, getHealingSessions, approveHealing } from '@/api/monitoring'
 import { formatRelativeTime, formatMs } from '@/lib/utils'
 import { useWebSocket } from '@/hooks/useWebSocket'
+import { useToast } from '@/hooks/useToast'
 
 export default function Monitoring() {
   const queryClient = useQueryClient()
-  const { isConnected, lastMessage } = useWebSocket(
+  const toast = useToast()
+  const { isConnected } = useWebSocket(
     `${import.meta.env.VITE_WS_URL || 'ws://localhost:8000'}/api/monitoring/ws/live`
   )
 
@@ -31,6 +33,10 @@ export default function Monitoring() {
       approveHealing(sessionId, attempts),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['healingSessions'] })
+      toast.success('Healing approved')
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || 'Failed to approve healing')
     },
   })
 
@@ -39,7 +45,7 @@ export default function Monitoring() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Monitoring</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Monitoring</h1>
         <div className="flex items-center gap-2">
           {isConnected ? (
             <Badge variant="success" className="flex items-center gap-1">
@@ -78,16 +84,16 @@ export default function Monitoring() {
             {status?.pipelines.map((pipeline) => (
               <div
                 key={pipeline.source_id}
-                className="p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors"
+                className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-gray-300 dark:hover:border-gray-600 transition-colors"
               >
                 <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium truncate">{pipeline.source_name}</span>
+                  <span className="font-medium truncate text-gray-900 dark:text-gray-100">{pipeline.source_name}</span>
                   <StatusBadge status={pipeline.status} />
                 </div>
-                <div className="space-y-1 text-sm text-gray-500">
+                <div className="space-y-1 text-sm text-gray-500 dark:text-gray-400">
                   <div className="flex justify-between">
                     <span>Success Rate</span>
-                    <span className="font-medium text-gray-700">{pipeline.success_rate}%</span>
+                    <span className="font-medium text-gray-700 dark:text-gray-300">{pipeline.success_rate}%</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Avg Time</span>
@@ -115,11 +121,11 @@ export default function Monitoring() {
               {healingData.sessions.map((session) => (
                 <div
                   key={session.session_id}
-                  className="flex items-center justify-between p-4 bg-gray-50 rounded-lg"
+                  className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
                 >
                   <div>
-                    <p className="font-medium">{session.source_name}</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="font-medium text-gray-900 dark:text-gray-100">{session.source_name}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       Error: {session.error_code} | Attempt: {session.current_attempt}/
                       {session.max_attempts}
                     </p>
@@ -162,11 +168,11 @@ function SummaryCard({
   color: 'gray' | 'green' | 'red' | 'yellow' | 'blue'
 }) {
   const colorStyles = {
-    gray: 'bg-gray-100 text-gray-700',
-    green: 'bg-green-100 text-green-700',
-    red: 'bg-red-100 text-red-700',
-    yellow: 'bg-yellow-100 text-yellow-700',
-    blue: 'bg-blue-100 text-blue-700',
+    gray: 'bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-300',
+    green: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+    red: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+    yellow: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+    blue: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
   }
 
   return (

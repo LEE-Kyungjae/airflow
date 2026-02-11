@@ -18,7 +18,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
 
-from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions
+from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions, e2e_pipeline
 from app.services.mongo_service import MongoService
 from app.auth import APIKeyAuth, JWTAuth
 from app.core import configure_logging, get_logger, CorrelationIdMiddleware
@@ -143,6 +143,10 @@ TAGS_METADATA = [
     {
         "name": "Auth Config",
         "description": "Authentication configuration for crawling sources requiring login.",
+    },
+    {
+        "name": "E2E Pipeline",
+        "description": "End-to-end automation pipeline: URL input to fully deployed crawler with monitoring.",
     },
     {
         "name": "Health",
@@ -358,3 +362,4 @@ app.include_router(schemas.router, prefix="/api/schemas", tags=["Schemas"])  # �
 app.include_router(catalog.router, prefix="/api/catalog", tags=["Catalog"])  # 데이터 카탈로그
 app.include_router(versions.router, prefix="/api/versions", tags=["Versions"])  # 데이터 버전 관리
 app.include_router(auth_config.router, prefix="/api/sources", tags=["Auth Config"])  # 소스별 인증 설정
+app.include_router(e2e_pipeline.router, prefix="/api/e2e", tags=["E2E Pipeline"])  # E2E 자동화 파이프라인  # 소스별 인증 설정

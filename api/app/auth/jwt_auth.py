@@ -1,6 +1,7 @@
 """
 JWT 토큰 기반 인증
 사용자 인증 및 세션 관리용
+MongoDB 영속화 지원 (fallback: in-memory)
 """
 
 import os
@@ -53,7 +54,7 @@ class User:
 
 
 class JWTAuth:
-    """JWT 인증 관리자"""
+    """JWT 인증 관리자 (MongoDB 영속화 지원)"""
 
     # 설정
     SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")
@@ -61,9 +62,39 @@ class JWTAuth:
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7"))
 
-    # 간단한 사용자 저장소 (프로덕션에서는 DB 사용)
+    # 사용자 저장소: in-memory 캐시 + MongoDB 영속화
     _users: Dict[str, User] = {}
+    _db_collection = None  # MongoDB users 컬렉션
     _initialized: bool = False
+
+    @classmethod
+    def _init_db(cls):
+        """MongoDB 연결 초기화 (실패 시 in-memory fallback)"""
+        try:
+            from pymongo import MongoClient
+            uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+            db_name = os.getenv("MONGODB_DATABASE", "crawler_system")
+            client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+            client.server_info()  # 연결 테스트
+            db = client[db_name]
+            cls._db_collection = db["users"]
+            cls._db_collection.create_index("user_id", unique=True)
+            logger.info("JWTAuth: MongoDB users 컬렉션 연결 성공")
+            # 기존 사용자 로드
+            for doc in cls._db_collection.find({"is_active": True}):
+                user = User(
+                    id=doc["user_id"],
+                    username=doc["username"],
+                    email=doc.get("email"),
+                    role=doc.get("role", "user"),
+                    scopes=doc.get("scopes", ["read"]),
+                    is_active=doc.get("is_active", True),
+                )
+                cls._users[user.id] = user
+            logger.info(f"JWTAuth: MongoDB에서 {len(cls._users)}명 사용자 로드")
+        except Exception as e:
+            cls._db_collection = None
+            logger.info(f"JWTAuth: MongoDB 미연결, in-memory 모드 ({e})")
 
     @classmethod
     def init(cls):
@@ -90,17 +121,45 @@ class JWTAuth:
             logger.warning("개발용 임시 JWT 시크릿 키 생성됨 (서버 재시작 시 변경)")
             logger.warning("프로덕션에서는 JWT_SECRET_KEY 환경변수 설정 필요!")
 
+        # MongoDB 연결 시도
+        cls._init_db()
+
         # 기본 관리자 계정 (개발/테스트용)
         if env in ("development", "test"):
-            cls._users["admin"] = User(
+            admin_user = User(
                 id="admin",
                 username="admin",
                 email="admin@localhost",
                 role="admin",
                 scopes=["admin", "read", "write", "delete"]
             )
+            cls._users["admin"] = admin_user
+            cls._persist_user(admin_user)
 
         cls._initialized = True
+
+    @classmethod
+    def _persist_user(cls, user: User):
+        """사용자를 MongoDB에 영속화 (연결 시)"""
+        if cls._db_collection is None:
+            return
+        try:
+            doc = {
+                "user_id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role,
+                "scopes": user.scopes,
+                "is_active": user.is_active,
+                "updated_at": datetime.utcnow(),
+            }
+            cls._db_collection.update_one(
+                {"user_id": user.id},
+                {"$set": doc, "$setOnInsert": {"created_at": datetime.utcnow()}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning(f"JWTAuth: 사용자 영속화 실패 ({user.id}): {e}")
 
     @classmethod
     def create_access_token(
@@ -211,8 +270,31 @@ class JWTAuth:
 
     @classmethod
     def get_user(cls, user_id: str) -> Optional[User]:
-        """사용자 조회"""
-        return cls._users.get(user_id)
+        """사용자 조회 (캐시 → MongoDB fallback)"""
+        # 1. in-memory 캐시 확인
+        user = cls._users.get(user_id)
+        if user is not None:
+            return user
+
+        # 2. MongoDB fallback
+        if cls._db_collection is not None:
+            try:
+                doc = cls._db_collection.find_one({"user_id": user_id, "is_active": True})
+                if doc:
+                    user = User(
+                        id=doc["user_id"],
+                        username=doc["username"],
+                        email=doc.get("email"),
+                        role=doc.get("role", "user"),
+                        scopes=doc.get("scopes", ["read"]),
+                        is_active=doc.get("is_active", True),
+                    )
+                    cls._users[user_id] = user  # 캐시 갱신
+                    return user
+            except Exception as e:
+                logger.warning(f"JWTAuth: MongoDB 사용자 조회 실패 ({user_id}): {e}")
+
+        return None
 
     @classmethod
     def register_user(
@@ -223,7 +305,7 @@ class JWTAuth:
         role: str = "user",
         scopes: Optional[list] = None
     ) -> User:
-        """사용자 등록"""
+        """사용자 등록 (in-memory + MongoDB 영속화)"""
         user = User(
             id=user_id,
             username=username,
@@ -232,6 +314,7 @@ class JWTAuth:
             scopes=scopes or ["read"]
         )
         cls._users[user_id] = user
+        cls._persist_user(user)
         logger.info(f"사용자 등록: {user_id}")
         return user
 

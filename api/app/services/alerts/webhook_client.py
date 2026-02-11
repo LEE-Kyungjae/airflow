@@ -10,10 +10,13 @@ from typing import Optional, List
 
 import httpx
 
-from app.core import get_logger
+try:
+    from app.core import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from .throttle import AlertSeverity
-
-logger = get_logger(__name__)
 
 
 class WebhookClient:

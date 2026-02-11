@@ -14,9 +14,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
-from app.core import get_logger
-
-logger = get_logger(__name__)
+try:
+    from app.core import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 
 class ChangeType(str, Enum):

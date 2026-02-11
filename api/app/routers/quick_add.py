@@ -323,7 +323,7 @@ async def quick_add_source(
         source_data = {
             'name': source_name,
             'url': request.url,
-            'type': 'html',  # TODO: result.strategy 기반 결정
+            'type': 'dynamic' if result.requires_js else result.strategy.value if hasattr(result.strategy, 'value') else 'html',
             'fields': fields,
             'schedule': result.recommended_schedule,
             'status': 'pending',

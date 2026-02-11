@@ -13,13 +13,16 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, asdict
 
-from app.core import get_logger
+try:
+    from app.core import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from .metrics import MetricsCollector
 from .alerts import AlertRuleEngine
 from .sla import SLAMonitor
 from .freshness import FreshnessTracker
-
-logger = get_logger(__name__)
 
 
 @dataclass

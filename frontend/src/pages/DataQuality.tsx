@@ -40,15 +40,16 @@ import {
   acknowledgeAnomaly,
   type QualityAnomaly,
   type ValidationResult,
-  type TimelineDataPoint,
 } from '@/api/dataQuality'
 import { formatRelativeTime } from '@/lib/utils'
+import { useToast } from '@/hooks/useToast'
 
 export default function DataQuality() {
   const queryClient = useQueryClient()
   const [selectedSource, setSelectedSource] = useState<string | null>(null)
   const [timelineDays, setTimelineDays] = useState(7)
   const [timelineInterval, setTimelineInterval] = useState<'hour' | 'day'>('day')
+  const toast = useToast()
 
   const { data: dashboard, isLoading } = useQuery({
     queryKey: ['qualityDashboard'],
@@ -84,6 +85,10 @@ export default function DataQuality() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['anomalies'] })
       queryClient.invalidateQueries({ queryKey: ['qualityDashboard'] })
+      toast.success('Anomaly acknowledged')
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || 'Failed to acknowledge')
     },
   })
 
@@ -92,7 +97,7 @@ export default function DataQuality() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Data Quality Monitor</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Data Quality Monitor</h1>
         <Badge variant={dashboard?.overall_stats?.anomalies_count ? 'error' : 'success'}>
           {dashboard?.overall_stats?.anomalies_count || 0} Active Anomalies
         </Badge>
@@ -144,7 +149,7 @@ export default function DataQuality() {
               <select
                 value={timelineDays}
                 onChange={(e) => setTimelineDays(Number(e.target.value))}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value={1}>1일</option>
                 <option value={7}>7일</option>
@@ -154,7 +159,7 @@ export default function DataQuality() {
               <select
                 value={timelineInterval}
                 onChange={(e) => setTimelineInterval(e.target.value as 'hour' | 'day')}
-                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="hour">시간별</option>
                 <option value="day">일별</option>
@@ -167,7 +172,7 @@ export default function DataQuality() {
             <div className="space-y-6">
               {/* Quality Score Trend */}
               <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-3">품질 점수 추이</h4>
+                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">품질 점수 추이</h4>
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={timeline.timeline}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -203,7 +208,7 @@ export default function DataQuality() {
 
               {/* Validation Count & Records */}
               <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-3">수집 건수</h4>
+                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">수집 건수</h4>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={timeline.timeline}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -225,7 +230,7 @@ export default function DataQuality() {
 
               {/* Issues Trend */}
               <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-3">이슈 발생 추이</h4>
+                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">이슈 발생 추이</h4>
                 <ResponsiveContainer width="100%" height={200}>
                   <LineChart data={timeline.timeline}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -268,9 +273,9 @@ export default function DataQuality() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center h-48 text-gray-500">
+            <div className="flex items-center justify-center h-48 text-gray-500 dark:text-gray-400">
               <div className="text-center">
-                <BarChart3 className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                <BarChart3 className="w-12 h-12 mx-auto mb-2 text-gray-300 dark:text-gray-600" />
                 <p>타임라인 데이터가 없습니다</p>
               </div>
             </div>
@@ -291,8 +296,8 @@ export default function DataQuality() {
                   key={source.source_id}
                   className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors ${
                     selectedSource === source.source_id
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-gray-200 hover:border-gray-300'
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                      : 'border-gray-200 hover:border-gray-300 dark:border-gray-700 dark:hover:border-gray-600'
                   }`}
                   onClick={() =>
                     setSelectedSource(selectedSource === source.source_id ? null : source.source_id)
@@ -303,8 +308,8 @@ export default function DataQuality() {
                       className={`w-2 h-2 rounded-full ${getScoreDotColor(source.quality_score)}`}
                     />
                     <div>
-                      <p className="font-medium">{source.source_name}</p>
-                      <p className="text-xs text-gray-500">
+                      <p className="font-medium text-gray-900 dark:text-gray-100">{source.source_name}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
                         Last: {formatRelativeTime(source.last_validation)}
                       </p>
                     </div>
@@ -322,7 +327,7 @@ export default function DataQuality() {
                 </div>
               ))}
               {(!dashboard?.source_scores || dashboard.source_scores.length === 0) && (
-                <p className="text-gray-500 text-center py-4">No validation data available</p>
+                <p className="text-gray-500 dark:text-gray-400 text-center py-4">No validation data available</p>
               )}
             </div>
           </CardContent>
@@ -338,13 +343,13 @@ export default function DataQuality() {
               {dashboard?.top_issues?.map((issue, idx) => (
                 <div
                   key={issue.rule}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                  className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
                 >
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-medium text-gray-400">#{idx + 1}</span>
+                    <span className="text-sm font-medium text-gray-400 dark:text-gray-500">#{idx + 1}</span>
                     <div>
-                      <p className="font-medium">{formatRuleName(issue.rule)}</p>
-                      <p className="text-xs text-gray-500">
+                      <p className="font-medium text-gray-900 dark:text-gray-100">{formatRuleName(issue.rule)}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
                         Affects {issue.affected_sources} source(s)
                       </p>
                     </div>
@@ -353,7 +358,7 @@ export default function DataQuality() {
                 </div>
               ))}
               {(!dashboard?.top_issues || dashboard.top_issues.length === 0) && (
-                <p className="text-gray-500 text-center py-4">No issues detected</p>
+                <p className="text-gray-500 dark:text-gray-400 text-center py-4">No issues detected</p>
               )}
             </div>
           </CardContent>
@@ -379,7 +384,7 @@ export default function DataQuality() {
               />
             ))}
             {(!anomalies || anomalies.filter((a) => !a.acknowledged).length === 0) && (
-              <div className="flex items-center justify-center gap-2 py-8 text-gray-500">
+              <div className="flex items-center justify-center gap-2 py-8 text-gray-500 dark:text-gray-400">
                 <CheckCircle className="w-5 h-5 text-green-500" />
                 <span>No active anomalies</span>
               </div>
@@ -394,7 +399,7 @@ export default function DataQuality() {
           <CardTitle>
             Recent Validations
             {selectedSource && (
-              <span className="text-sm font-normal text-gray-500 ml-2">
+              <span className="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">
                 (Filtered by source)
               </span>
             )}
@@ -404,7 +409,7 @@ export default function DataQuality() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="text-left text-sm text-gray-500 border-b">
+                <tr className="text-left text-sm text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
                   <th className="pb-3 font-medium">Source</th>
                   <th className="pb-3 font-medium">Run ID</th>
                   <th className="pb-3 font-medium">Records</th>
@@ -421,7 +426,7 @@ export default function DataQuality() {
               </tbody>
             </table>
             {(!validationResults?.items || validationResults.items.length === 0) && (
-              <p className="text-gray-500 text-center py-8">No validation results</p>
+              <p className="text-gray-500 dark:text-gray-400 text-center py-8">No validation results</p>
             )}
           </div>
         </CardContent>
@@ -442,11 +447,11 @@ function StatCard({
   color: string
 }) {
   const colorStyles: Record<string, string> = {
-    gray: 'bg-gray-100 text-gray-700',
-    green: 'bg-green-100 text-green-700',
-    red: 'bg-red-100 text-red-700',
-    yellow: 'bg-yellow-100 text-yellow-700',
-    blue: 'bg-blue-100 text-blue-700',
+    gray: 'bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-300',
+    green: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+    red: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+    yellow: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
+    blue: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
   }
 
   return (
@@ -470,9 +475,9 @@ function AnomalyCard({
   isLoading: boolean
 }) {
   const severityColors: Record<string, string> = {
-    info: 'bg-blue-50 border-blue-200',
-    warning: 'bg-yellow-50 border-yellow-200',
-    error: 'bg-red-50 border-red-200',
+    info: 'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800',
+    warning: 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800',
+    error: 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800',
   }
 
   const severityBadge: Record<string, 'info' | 'warning' | 'error'> = {
@@ -484,7 +489,7 @@ function AnomalyCard({
   return (
     <div
       className={`flex items-center justify-between p-4 rounded-lg border ${
-        severityColors[anomaly.severity] || 'bg-gray-50 border-gray-200'
+        severityColors[anomaly.severity] || 'bg-gray-50 border-gray-200 dark:bg-gray-700/50 dark:border-gray-600'
       }`}
     >
       <div className="flex items-start gap-3">
@@ -504,8 +509,8 @@ function AnomalyCard({
               {anomaly.anomaly_type.replace('_', ' ')}
             </Badge>
           </div>
-          <p className="text-sm text-gray-600">{anomaly.description}</p>
-          <p className="text-xs text-gray-400 mt-1">
+          <p className="text-sm text-gray-600 dark:text-gray-400">{anomaly.description}</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
             Detected {formatRelativeTime(anomaly.detected_at)}
           </p>
         </div>
@@ -523,7 +528,7 @@ function ValidationResultRow({ result }: { result: ValidationResult }) {
 
   return (
     <>
-      <tr className="border-b border-gray-100 hover:bg-gray-50">
+      <tr className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50">
         <td className="py-3">{result.source_id}</td>
         <td className="py-3 font-mono text-sm">{result.run_id.slice(0, 8)}...</td>
         <td className="py-3">{result.total_records.toLocaleString()}</td>
@@ -546,7 +551,7 @@ function ValidationResultRow({ result }: { result: ValidationResult }) {
             {result.issue_summary.total === 0 && <Badge variant="success">Clean</Badge>}
           </div>
         </td>
-        <td className="py-3 text-sm text-gray-500">
+        <td className="py-3 text-sm text-gray-500 dark:text-gray-400">
           {formatRelativeTime(result.validated_at)}
         </td>
         <td className="py-3">
@@ -557,7 +562,7 @@ function ValidationResultRow({ result }: { result: ValidationResult }) {
       </tr>
       {showDetails && (
         <tr>
-          <td colSpan={7} className="p-4 bg-gray-50">
+          <td colSpan={7} className="p-4 bg-gray-50 dark:bg-gray-800/50">
             <IssueDetails result={result} />
           </td>
         </tr>
@@ -571,10 +576,10 @@ function IssueDetails({ result }: { result: ValidationResult }) {
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Issues by Rule */}
       <div>
-        <h4 className="font-medium text-sm text-gray-700 mb-2">Issues by Rule</h4>
+        <h4 className="font-medium text-sm text-gray-700 dark:text-gray-300 mb-2">Issues by Rule</h4>
         <div className="space-y-1">
           {Object.entries(result.issue_summary.by_rule).map(([rule, count]) => (
-            <div key={rule} className="flex justify-between text-sm">
+            <div key={rule} className="flex justify-between text-sm text-gray-700 dark:text-gray-300">
               <span>{formatRuleName(rule)}</span>
               <span className="font-medium">{count}</span>
             </div>
@@ -584,12 +589,12 @@ function IssueDetails({ result }: { result: ValidationResult }) {
 
       {/* Issues by Field */}
       <div>
-        <h4 className="font-medium text-sm text-gray-700 mb-2">Issues by Field</h4>
+        <h4 className="font-medium text-sm text-gray-700 dark:text-gray-300 mb-2">Issues by Field</h4>
         <div className="space-y-1">
           {Object.entries(result.issue_summary.by_field)
             .slice(0, 5)
             .map(([field, count]) => (
-              <div key={field} className="flex justify-between text-sm">
+              <div key={field} className="flex justify-between text-sm text-gray-700 dark:text-gray-300">
                 <span>{field}</span>
                 <span className="font-medium">{count}</span>
               </div>
@@ -600,10 +605,10 @@ function IssueDetails({ result }: { result: ValidationResult }) {
       {/* Sample Issues */}
       {result.issues.length > 0 && (
         <div className="md:col-span-2">
-          <h4 className="font-medium text-sm text-gray-700 mb-2">Sample Issues (First 5)</h4>
+          <h4 className="font-medium text-sm text-gray-700 dark:text-gray-300 mb-2">Sample Issues (First 5)</h4>
           <div className="space-y-2">
             {result.issues.slice(0, 5).map((issue, idx) => (
-              <div key={idx} className="text-sm p-2 bg-white rounded border">
+              <div key={idx} className="text-sm p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
                 <div className="flex items-center gap-2 mb-1">
                   <Badge
                     variant={
@@ -617,11 +622,11 @@ function IssueDetails({ result }: { result: ValidationResult }) {
                     {issue.severity}
                   </Badge>
                   <span className="font-medium">{issue.field_name}</span>
-                  <span className="text-gray-400">({issue.rule_name})</span>
+                  <span className="text-gray-400 dark:text-gray-500">({issue.rule_name})</span>
                 </div>
-                <p className="text-gray-600">{issue.message}</p>
+                <p className="text-gray-600 dark:text-gray-400">{issue.message}</p>
                 {issue.suggestion && (
-                  <p className="text-blue-600 text-xs mt-1">Suggestion: {issue.suggestion}</p>
+                  <p className="text-blue-600 dark:text-blue-400 text-xs mt-1">Suggestion: {issue.suggestion}</p>
                 )}
               </div>
             ))}
@@ -646,9 +651,9 @@ function getScoreDotColor(score: number): string {
 }
 
 function getScoreTextColor(score: number): string {
-  if (score >= 90) return 'text-green-600'
-  if (score >= 70) return 'text-yellow-600'
-  return 'text-red-600'
+  if (score >= 90) return 'text-green-600 dark:text-green-400'
+  if (score >= 70) return 'text-yellow-600 dark:text-yellow-400'
+  return 'text-red-600 dark:text-red-400'
 }
 
 function formatRuleName(rule: string): string {

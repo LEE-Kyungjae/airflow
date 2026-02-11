@@ -12,11 +12,16 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
-from app.core import get_logger
-from app.services.alerts import AlertDispatcher, AlertSeverity
+try:
+    from app.core import get_logger
+    from app.services.alerts import AlertDispatcher, AlertSeverity
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+    AlertDispatcher = None
+    AlertSeverity = None
 from .validator import ValidationResult, ValidationSeverity as ValSeverity
-
-logger = get_logger(__name__)
 
 
 @dataclass

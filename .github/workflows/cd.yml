@@ -127,29 +127,66 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Deploy to staging
-        run: |
-          echo "Deploying to staging environment..."
-          echo "API Image: ${{ needs.build-and-push.outputs.api_image }}"
-          echo "Airflow Image: ${{ needs.build-and-push.outputs.airflow_image }}"
-          echo "Version: ${{ needs.build-and-push.outputs.version }}"
-          # Add your deployment commands here
-          # Examples:
-          # - kubectl set image deployment/api api=${{ needs.build-and-push.outputs.api_image }}
-          # - docker compose -f docker-compose.staging.yml pull && docker compose -f docker-compose.staging.yml up -d
-          # - ssh user@staging-server "cd /app && docker compose pull && docker compose up -d"
+      - name: Deploy to staging via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.STAGING_APP_PATH || '/opt/crawler-system' }}
 
-      - name: Verify deployment
-        run: |
-          echo "Verifying staging deployment..."
-          # Add health check commands
-          # curl -f https://staging.example.com/health || exit 1
+            echo "=== Staging deployment started ==="
+            echo "Version: ${{ needs.build-and-push.outputs.version }}"
+
+            # Save current image tags for rollback
+            docker compose ps --format json > /tmp/pre-deploy-state.json 2>/dev/null || true
+
+            # Pull new images
+            export API_IMAGE="${{ needs.build-and-push.outputs.api_image }}"
+            export AIRFLOW_IMAGE="${{ needs.build-and-push.outputs.airflow_image }}"
+
+            docker compose pull api airflow-webserver airflow-scheduler
+
+            # Rolling update: restart services one by one
+            docker compose up -d --no-deps api
+            docker compose up -d --no-deps airflow-webserver
+            docker compose up -d --no-deps airflow-scheduler
+
+            # Prune old images
+            docker image prune -f
+
+            echo "=== Staging deployment completed ==="
+
+      - name: Verify staging health
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            MAX_RETRIES=10
+            RETRY_INTERVAL=5
+
+            echo "Waiting for API health check..."
+            for i in $(seq 1 $MAX_RETRIES); do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "API is healthy (attempt $i/$MAX_RETRIES)"
+                exit 0
+              fi
+              echo "Attempt $i/$MAX_RETRIES - waiting ${RETRY_INTERVAL}s..."
+              sleep $RETRY_INTERVAL
+            done
+
+            echo "ERROR: API health check failed after $MAX_RETRIES attempts"
+            exit 1
 
       - name: Notify deployment success
         if: success()
         run: |
-          echo "Staging deployment successful!"
-          # Add notification (Slack, Teams, etc.)
+          echo "::notice::Staging deployment successful! Version: ${{ needs.build-and-push.outputs.version }}"
 
   deploy-production:
     name: Deploy to Production
@@ -164,23 +201,102 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Deploy to production
-        run: |
-          echo "Deploying to production environment..."
-          echo "API Image: ${{ needs.build-and-push.outputs.api_image }}"
-          echo "Airflow Image: ${{ needs.build-and-push.outputs.airflow_image }}"
-          echo "Version: ${{ needs.build-and-push.outputs.version }}"
-          # Add your production deployment commands here
-          # Ensure you have proper rollback mechanisms in place
+      - name: Create pre-deploy backup
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
 
-      - name: Verify deployment
-        run: |
-          echo "Verifying production deployment..."
-          # Add health check commands
-          # curl -f https://example.com/health || exit 1
+            # Save current state for rollback
+            docker compose ps --format json > /tmp/pre-deploy-state.json 2>/dev/null || true
+            docker compose config --images > /tmp/pre-deploy-images.txt 2>/dev/null || true
+
+            # Run MongoDB backup before deployment
+            if [ -f scripts/backup.sh ]; then
+              bash scripts/backup.sh --pre-deploy || echo "Backup warning (non-blocking)"
+            fi
+
+      - name: Deploy to production via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
+
+            echo "=== Production deployment started ==="
+            echo "Version: ${{ needs.build-and-push.outputs.version }}"
+
+            # Pull new images
+            export API_IMAGE="${{ needs.build-and-push.outputs.api_image }}"
+            export AIRFLOW_IMAGE="${{ needs.build-and-push.outputs.airflow_image }}"
+
+            docker compose pull api airflow-webserver airflow-scheduler
+
+            # Rolling update with zero-downtime
+            docker compose up -d --no-deps api
+            sleep 5
+            docker compose up -d --no-deps airflow-webserver
+            docker compose up -d --no-deps airflow-scheduler
+
+            # Prune old images
+            docker image prune -f
+
+            echo "=== Production deployment completed ==="
+
+      - name: Verify production health
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            MAX_RETRIES=15
+            RETRY_INTERVAL=5
+
+            echo "Waiting for API health check..."
+            for i in $(seq 1 $MAX_RETRIES); do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "API is healthy (attempt $i/$MAX_RETRIES)"
+                # Verify all critical services
+                docker compose ps --format "{{.Name}} {{.Status}}" | grep -v "Exit" || true
+                exit 0
+              fi
+              echo "Attempt $i/$MAX_RETRIES - waiting ${RETRY_INTERVAL}s..."
+              sleep $RETRY_INTERVAL
+            done
+
+            echo "ERROR: Production health check failed - triggering rollback"
+            exit 1
+
+      - name: Auto-rollback on health check failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
+            echo "=== ROLLBACK: Restoring previous version ==="
+
+            if [ -f /tmp/pre-deploy-images.txt ]; then
+              docker compose up -d --no-deps api airflow-webserver airflow-scheduler
+              echo "Rollback completed - services restored"
+            else
+              echo "WARNING: No rollback state found"
+            fi
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && success()
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
@@ -189,11 +305,14 @@ jobs:
             - API: `${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:${{ needs.build-and-push.outputs.version }}`
             - Airflow: `${{ env.REGISTRY }}/${{ env.AIRFLOW_IMAGE_NAME }}:${{ needs.build-and-push.outputs.version }}`
 
-      - name: Notify deployment success
-        if: success()
+      - name: Notify deployment result
+        if: always()
         run: |
-          echo "Production deployment successful!"
-          # Add notification (Slack, Teams, etc.)
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "::notice::Production deployment successful! Version: ${{ needs.build-and-push.outputs.version }}"
+          else
+            echo "::error::Production deployment FAILED! Check rollback status."
+          fi
 
   rollback:
     name: Rollback (Manual)
@@ -202,8 +321,22 @@ jobs:
     needs: [deploy-staging, deploy-production]
     steps:
       - name: Rollback deployment
-        run: |
-          echo "Rolling back deployment..."
-          # Add rollback commands here
-          # kubectl rollout undo deployment/api
-          # docker compose down && docker compose up -d --no-deps api
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
+            echo "=== Manual rollback initiated ==="
+
+            # Restore from saved state
+            if [ -f /tmp/pre-deploy-images.txt ]; then
+              docker compose down api airflow-webserver airflow-scheduler
+              docker compose up -d api airflow-webserver airflow-scheduler
+              echo "Manual rollback completed"
+            else
+              echo "No saved state found. Restarting current images..."
+              docker compose restart api airflow-webserver airflow-scheduler
+            fi

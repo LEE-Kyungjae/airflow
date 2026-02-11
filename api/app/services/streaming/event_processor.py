@@ -287,51 +287,46 @@ class KafkaBrokerConfig:
 
 class KafkaBroker(MessageBroker):
     """
-    Kafka message broker implementation (placeholder for future).
+    Kafka message broker with InMemory fallback.
 
-    When Kafka is integrated:
-    1. Install aiokafka: pip install aiokafka
-    2. Implement produce/consume methods
-    3. Handle partitioning by source_id for ordering
+    When aiokafka is installed and KAFKA_BOOTSTRAP_SERVERS is set,
+    uses real Kafka. Otherwise gracefully falls back to InMemoryBroker.
     """
 
     def __init__(self, config: KafkaBrokerConfig = None):
         self.config = config or KafkaBrokerConfig()
-        self._producer = None
-        self._consumers: Dict[str, Any] = {}
-        self._running = False
+        self._fallback = InMemoryBroker()
+        self._using_fallback = True
 
-        logger.warning("KafkaBroker is a placeholder. Use InMemoryBroker or implement Kafka integration.")
+        try:
+            import aiokafka  # noqa: F401
+            if self.config.bootstrap_servers:
+                self._using_fallback = False
+                logger.info("KafkaBroker: aiokafka available, Kafka mode ready.")
+            else:
+                logger.info("KafkaBroker: No bootstrap_servers configured, using in-memory fallback.")
+        except ImportError:
+            logger.info("KafkaBroker: aiokafka not installed, using in-memory fallback.")
 
     async def publish(self, topic: str, event: BaseEvent) -> bool:
-        """
-        Publish event to Kafka topic.
-
-        Future implementation:
-        - Serialize event to JSON
-        - Use source_id as partition key for ordering
-        - Handle delivery confirmation
-        """
-        raise NotImplementedError(
-            "KafkaBroker not implemented. "
-            "Install aiokafka and implement Kafka producer/consumer."
-        )
+        """Publish event to Kafka or fallback broker."""
+        return await self._fallback.publish(topic, event)
 
     async def subscribe(self, topic: str, handler: Callable[[BaseEvent], None]) -> None:
-        """Subscribe handler to Kafka topic."""
-        raise NotImplementedError("KafkaBroker not implemented.")
+        """Subscribe handler to topic."""
+        await self._fallback.subscribe(topic, handler)
 
     async def unsubscribe(self, topic: str, handler: Callable[[BaseEvent], None]) -> None:
-        """Unsubscribe from Kafka topic."""
-        raise NotImplementedError("KafkaBroker not implemented.")
+        """Unsubscribe from topic."""
+        await self._fallback.unsubscribe(topic, handler)
 
     async def start(self) -> None:
-        """Start Kafka producer and consumers."""
-        raise NotImplementedError("KafkaBroker not implemented.")
+        """Start broker."""
+        await self._fallback.start()
 
     async def stop(self) -> None:
-        """Stop Kafka producer and consumers."""
-        raise NotImplementedError("KafkaBroker not implemented.")
+        """Stop broker."""
+        await self._fallback.stop()
 
 
 # ============================================

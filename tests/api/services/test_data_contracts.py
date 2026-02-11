@@ -35,8 +35,8 @@ class TestExpectationResult:
         """Test ExpectationResult enum values."""
         from api.app.services.data_contracts.expectations import ExpectationResult
 
-        assert ExpectationResult.PASSED.value == "passed"
-        assert ExpectationResult.FAILED.value == "failed"
+        assert ExpectationResult.SUCCESS.value == "success"
+        assert ExpectationResult.FAILURE.value == "failure"
         assert ExpectationResult.SKIPPED.value == "skipped"
 
 
@@ -57,7 +57,7 @@ class TestExpectColumnNotNull:
         result = expectation.validate(data)
 
         assert result.success is True
-        assert result.observed_value == 0  # 0 null values
+        assert result.unexpected_count == 0  # 0 null values
 
     def test_expect_column_not_null_fail(self):
         """Test column not null expectation fails with null values."""
@@ -73,7 +73,7 @@ class TestExpectColumnNotNull:
         result = expectation.validate(data)
 
         assert result.success is False
-        assert result.observed_value == 1  # 1 null value
+        assert result.unexpected_count == 1  # 1 null value
         assert 1 in result.unexpected_index_list
 
     def test_expect_column_not_null_with_mostly(self):
@@ -290,7 +290,7 @@ class TestExpectTableRowCountBetween:
         result = expectation.validate(data)
 
         assert result.success is True
-        assert result.observed_value == 50
+        assert result.element_count == 50
 
     def test_expect_row_count_fail_too_few(self):
         """Test row count fails when too few rows."""
@@ -322,7 +322,7 @@ class TestExpectColumnValuesToBeOfType:
         """Test type expectation passes for string type."""
         from api.app.services.data_contracts.expectations import ExpectColumnValuesToBeOfType
 
-        expectation = ExpectColumnValuesToBeOfType(column="name", type_="str")
+        expectation = ExpectColumnValuesToBeOfType(column="name", type_="string")
         data = [
             {"name": "Alice"},
             {"name": "Bob"}
@@ -351,7 +351,7 @@ class TestExpectColumnValuesToBeOfType:
         """Test type expectation fails with wrong type."""
         from api.app.services.data_contracts.expectations import ExpectColumnValuesToBeOfType
 
-        expectation = ExpectColumnValuesToBeOfType(column="age", type_="int")
+        expectation = ExpectColumnValuesToBeOfType(column="age", type_="integer")
         data = [
             {"age": 25},
             {"age": "thirty"}  # String instead of int
