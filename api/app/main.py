@@ -18,7 +18,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
 
-from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions, e2e_pipeline
+from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions, e2e_pipeline, production_data
 from app.services.mongo_service import MongoService
 from app.auth import APIKeyAuth, JWTAuth
 from app.core import configure_logging, get_logger, CorrelationIdMiddleware
@@ -149,6 +149,10 @@ TAGS_METADATA = [
         "description": "End-to-end automation pipeline: URL input to fully deployed crawler with monitoring.",
     },
     {
+        "name": "Production Data",
+        "description": "PostgreSQL production data queries, common codes, domain statistics, and promotion history.",
+    },
+    {
         "name": "Health",
         "description": "System health check endpoints for load balancers and monitoring.",
     },
@@ -174,10 +178,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
 
+    # Connect PostgreSQL (graceful degradation if unavailable)
+    try:
+        from app.services.postgres_service import get_pg, close_pg
+        pg = await get_pg()
+        if pg.is_available:
+            logger.info("PostgreSQL connection successful")
+        else:
+            logger.warning("PostgreSQL not available (asyncpg missing or connection failed)")
+    except Exception as e:
+        logger.warning(f"PostgreSQL startup skipped: {e}")
+
     yield
 
     # Shutdown
     logger.info("Shutting down Crawler System API...")
+
+    # Disconnect PostgreSQL
+    try:
+        from app.services.postgres_service import close_pg
+        await close_pg()
+    except Exception:
+        pass
 
 
 # Create FastAPI application
@@ -362,4 +384,5 @@ app.include_router(schemas.router, prefix="/api/schemas", tags=["Schemas"])  # �
 app.include_router(catalog.router, prefix="/api/catalog", tags=["Catalog"])  # 데이터 카탈로그
 app.include_router(versions.router, prefix="/api/versions", tags=["Versions"])  # 데이터 버전 관리
 app.include_router(auth_config.router, prefix="/api/sources", tags=["Auth Config"])  # 소스별 인증 설정
-app.include_router(e2e_pipeline.router, prefix="/api/e2e", tags=["E2E Pipeline"])  # E2E 자동화 파이프라인  # 소스별 인증 설정
+app.include_router(e2e_pipeline.router, prefix="/api/e2e", tags=["E2E Pipeline"])  # E2E 자동화 파이프라인
+app.include_router(production_data.router, prefix="/api/production", tags=["Production Data"])  # PostgreSQL 프로덕션 데이터

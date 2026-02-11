@@ -5,6 +5,7 @@ python-multipart==0.0.6
 
 # Database
 pymongo==4.16.0
+asyncpg>=0.29.0
 
 # HTTP client
 httpx==0.28.1

@@ -3,6 +3,8 @@ Data Promotion Service for staging → production data movement.
 
 This module handles the promotion of verified data from staging
 collections to production collections after review approval.
+
+Dual-write: MongoDB (primary) + PostgreSQL (production analytics).
 """
 
 import logging
@@ -12,6 +14,64 @@ from bson import ObjectId
 from pymongo.database import Database
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# PostgreSQL Dual-Write Helper
+# ============================================================
+
+async def promote_to_pg(
+    source_id: str,
+    data: Dict[str, Any],
+    review_id: str,
+    production_id: Optional[str] = None,
+    staging_id: Optional[str] = None,
+    reviewer_id: str = "system",
+    has_corrections: bool = False,
+    corrections: Optional[List[Dict]] = None,
+    crawled_at: Optional[datetime] = None,
+    data_date: Optional[str] = None,
+) -> Optional[tuple]:
+    """
+    Async helper to dual-write approved data to PostgreSQL.
+
+    Called from the review router after MongoDB promotion succeeds.
+    Gracefully degrades if PG is unavailable.
+
+    Returns:
+        (table_name, row_id) or None
+    """
+    try:
+        from .postgres_service import get_pg
+
+        pg = await get_pg()
+        if not pg.is_available:
+            return None
+
+        meta = {
+            "review_id": review_id,
+            "production_id": production_id,
+            "staging_id": staging_id,
+            "verified_by": reviewer_id,
+            "has_corrections": has_corrections,
+            "corrections": corrections,
+            "crawled_at": crawled_at,
+            "data_date": data_date,
+        }
+
+        result = await pg.promote_to_production(
+            source_mongo_id=source_id,
+            data=data,
+            meta=meta,
+        )
+
+        if result:
+            logger.info(f"PG dual-write OK: {result[0]}/{result[1]}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"PG dual-write skipped: {e}")
+        return None
 
 
 # Mapping of data types to their staging/production collections
