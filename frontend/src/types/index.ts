@@ -139,3 +139,70 @@ export interface PaginatedResponse<T> {
   page: number
   limit: number
 }
+
+// Review types
+export interface ReviewFieldCorrection {
+  field: string
+  original_value: any
+  corrected_value: any
+  reason?: string
+}
+
+export interface SourceHighlight {
+  field: string
+  selector?: string
+  bbox?: { x: number; y: number; width: number; height: number; page?: number }
+}
+
+export interface ReviewItem {
+  _id: string
+  crawl_result_id: string
+  source_id: string
+  data_record_index: number
+  review_status: 'pending' | 'approved' | 'rejected' | 'on_hold' | 'needs_correction' | 'corrected'
+  original_data: Record<string, any>
+  corrected_data?: Record<string, any>
+  corrections?: ReviewFieldCorrection[]
+  source_highlights?: SourceHighlight[]
+  confidence_score?: number
+  needs_number_review?: boolean
+  uncertain_numbers?: string[]
+  notes?: string
+  rejection_reason?: string
+  rejection_notes?: string
+  reviewer_id?: string
+  reviewed_at?: string
+  created_at: string
+}
+
+export interface ReviewQueueItemData {
+  review: ReviewItem
+  source_name: string
+  source_type: string
+  source_url: string
+  total_in_queue: number
+  current_position: number
+}
+
+export interface ReviewDashboardData {
+  pending_count: number
+  today_reviewed: number
+  approval_rate: number
+  avg_confidence: number
+  needs_number_review_count: number
+  by_source: { source_id: string; source_name: string; pending_count: number }[]
+  recent_reviews: ReviewItem[]
+}
+
+export interface SourceContentData {
+  source_type: string
+  source_url: string
+  source_name: string
+  fields: FieldDefinition[]
+  highlights: SourceHighlight[]
+  html_snapshot?: string
+  raw_data?: any
+}
+
+export type ReviewAction = 'approved' | 'rejected' | 'on_hold'
+export type RejectionReason = 'data_error' | 'source_changed' | 'source_not_updated' | 'other'

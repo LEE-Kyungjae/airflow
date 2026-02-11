@@ -1,283 +1,385 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useCallback } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
-  getNextReview,
-  getSourceContent,
-  updateReview,
-  Review,
-  FieldCorrection,
-  SourceContent
-} from '../services/api'
-import SourceViewer from '../components/SourceViewer'
-import DataPanel from '../components/DataPanel'
+  ClipboardCheck,
+  Play,
+  RotateCcw,
+  BarChart3,
+  CheckCircle2,
+  AlertTriangle,
+  TrendingUp,
+} from 'lucide-react'
+import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/ui/Badge'
+import { DataGrid } from '@/components/review/DataGrid'
+import { ReviewToolbar } from '@/components/review/ReviewToolbar'
+import { SourceViewer } from '@/components/review/SourceViewer'
+import { RejectReasonModal } from '@/components/review/RejectReasonModal'
+import { useReviewSession } from '@/hooks/useReviewSession'
+import { useKeyboardReview } from '@/hooks/useKeyboardReview'
+import { getReviewDashboard, getResumeInfo } from '@/api/reviews'
+import { cn } from '@/lib/utils'
+import type { RejectionReason, ReviewDashboardData } from '@/types'
 
-const REVIEWER_ID = localStorage.getItem('reviewer_id') || 'reviewer_' + Math.random().toString(36).substr(2, 9)
-localStorage.setItem('reviewer_id', REVIEWER_ID)
+type ViewMode = 'dashboard' | 'review'
 
 export default function ReviewPage() {
-  const { reviewId } = useParams()
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
+  const [viewMode, setViewMode] = useState<ViewMode>('dashboard')
+  const [rejectModalOpen, setRejectModalOpen] = useState(false)
 
-  const [currentReviewId, setCurrentReviewId] = useState<string | null>(reviewId || null)
-  const [corrections, setCorrections] = useState<FieldCorrection[]>([])
-  const [notes, setNotes] = useState('')
-  const [startTime] = useState(Date.now())
-  const [showShortcuts, setShowShortcuts] = useState(true)
+  const session = useReviewSession()
 
-  // Fetch current review
-  const { data: reviewData, isLoading: loadingReview } = useQuery({
-    queryKey: ['review', currentReviewId],
-    queryFn: () => getNextReview({ current_id: currentReviewId || undefined }),
-    enabled: true
+  // Dashboard data
+  const { data: dashboard, isLoading: dashboardLoading } = useQuery({
+    queryKey: ['reviewDashboard'],
+    queryFn: getReviewDashboard,
+    enabled: viewMode === 'dashboard',
   })
 
-  // Fetch source content
-  const { data: sourceContent, isLoading: loadingSource } = useQuery({
-    queryKey: ['source-content', reviewData?.review?._id],
-    queryFn: () => getSourceContent(reviewData!.review!._id),
-    enabled: !!reviewData?.review?._id
+  // Resume info
+  const { data: resumeInfo } = useQuery({
+    queryKey: ['reviewResume'],
+    queryFn: getResumeInfo,
+    enabled: viewMode === 'dashboard',
   })
 
-  // Update mutation
-  const updateMutation = useMutation({
-    mutationFn: (params: { status: string; corrections?: FieldCorrection[]; notes?: string }) =>
-      updateReview(
-        reviewData!.review!._id,
-        {
-          status: params.status as any,
-          corrections: params.corrections,
-          notes: params.notes,
-          review_duration_ms: Date.now() - startTime
-        },
-        REVIEWER_ID
-      ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['review'] })
-      setCorrections([])
-      setNotes('')
-      goNext()
+  // Start review session
+  const handleStartReview = useCallback(async () => {
+    setViewMode('review')
+    await session.loadReview('forward')
+  }, [session])
+
+  // Resume from bookmark
+  const handleResumeReview = useCallback(async () => {
+    if (resumeInfo?.last_review_id) {
+      setViewMode('review')
+      await session.loadReview('forward', resumeInfo.last_review_id)
     }
-  })
+  }, [resumeInfo, session])
 
-  const goNext = useCallback(async () => {
-    const result = await getNextReview({
-      current_id: reviewData?.review?._id,
-      direction: 'forward'
-    })
-    if (result.has_next && result.review) {
-      setCurrentReviewId(result.review._id)
-      navigate(`/review/${result.review._id}`, { replace: true })
-    }
-  }, [reviewData, navigate])
+  // Back to dashboard
+  const handleBackToDashboard = useCallback(() => {
+    setViewMode('dashboard')
+  }, [])
 
-  const goPrevious = useCallback(async () => {
-    const result = await getNextReview({
-      current_id: reviewData?.review?._id,
-      direction: 'backward'
-    })
-    if (result.has_next && result.review) {
-      setCurrentReviewId(result.review._id)
-      navigate(`/review/${result.review._id}`, { replace: true })
-    }
-  }, [reviewData, navigate])
-
-  const handleApprove = () => {
-    updateMutation.mutate({ status: 'approved' })
-  }
-
-  const handleHold = () => {
-    updateMutation.mutate({ status: 'on_hold', notes })
-  }
-
-  const handleNeedsCorrection = () => {
-    updateMutation.mutate({ status: 'needs_correction', corrections, notes })
-  }
-
-  const handleCorrect = () => {
-    if (corrections.length > 0) {
-      updateMutation.mutate({ status: 'corrected', corrections, notes })
-    }
-  }
+  // Rejection handler
+  const handleRejectConfirm = useCallback(
+    (_reason: RejectionReason, _notes?: string) => {
+      session.rejectRow(session.selectedRowIndex)
+      setRejectModalOpen(false)
+    },
+    [session]
+  )
 
   // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+  useKeyboardReview({
+    onMoveUp: session.moveUp,
+    onMoveDown: session.moveDown,
+    onApprove: () => session.approveRow(session.selectedRowIndex),
+    onFlag: () => session.flagRow(session.selectedRowIndex),
+    onReject: () => setRejectModalOpen(true),
+    onUndo: session.undoLast,
+    onApproveAll: session.approveAll,
+    onEscape: handleBackToDashboard,
+    enabled: viewMode === 'review' && !rejectModalOpen,
+  })
 
-      switch (e.key) {
-        case 'Enter':
-        case '1':
-          e.preventDefault()
-          handleApprove()
-          break
-        case '2':
-          e.preventDefault()
-          handleHold()
-          break
-        case '3':
-          e.preventDefault()
-          handleNeedsCorrection()
-          break
-        case 'ArrowLeft':
-        case 'Backspace':
-          e.preventDefault()
-          goPrevious()
-          break
-        case 'ArrowRight':
-          e.preventDefault()
-          goNext()
-          break
-        case '?':
-          setShowShortcuts(s => !s)
-          break
-      }
-    }
+  // Get active highlight based on selected row
+  const activeHighlight =
+    session.review?.source_highlights?.[session.selectedRowIndex] || undefined
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleApprove, handleHold, handleNeedsCorrection, goPrevious, goNext])
-
-  if (loadingReview) {
-    return <div className="loading">로딩 중...</div>
+  if (viewMode === 'dashboard') {
+    return (
+      <ReviewDashboard
+        dashboard={dashboard}
+        resumeInfo={resumeInfo}
+        isLoading={dashboardLoading}
+        onStart={handleStartReview}
+        onResume={handleResumeReview}
+      />
+    )
   }
 
-  if (!reviewData?.has_next || !reviewData.review) {
+  // Review mode
+  if (!session.review && !session.isLoading) {
     return (
-      <div className="review-page">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
-          <div style={{ textAlign: 'center' }}>
-            <h2>검토할 항목이 없습니다</h2>
-            <p style={{ color: '#666', marginTop: '1rem' }}>모든 데이터가 검토되었습니다.</p>
-            <button className="btn btn-primary" onClick={() => navigate('/')}>
-              대시보드로 이동
-            </button>
-          </div>
-        </div>
+      <div className="flex flex-col items-center justify-center h-[calc(100vh-8rem)] text-center">
+        <CheckCircle2 className="w-16 h-16 text-green-500 mb-4" />
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          All reviews complete
+        </h2>
+        <p className="text-gray-500 dark:text-gray-400 mb-6">
+          No more pending items in the queue.
+        </p>
+        <Button variant="outline" onClick={handleBackToDashboard}>
+          Back to Dashboard
+        </Button>
       </div>
     )
   }
 
-  const review = reviewData.review
-  const source = reviewData.source
-
   return (
-    <div className="review-page">
-      {/* Left: Source Viewer */}
-      <div className="source-panel">
-        <div className="panel-header">
-          <h2>소스: {source?.name}</h2>
-          <span className="confidence-badge medium">{source?.type.toUpperCase()}</span>
-        </div>
-        <div className="panel-content">
+    <div className="flex flex-col h-[calc(100vh-5rem)] -m-4 md:-m-6">
+      {/* Toolbar */}
+      <ReviewToolbar
+        position={session.position}
+        totalPending={session.totalPending}
+        sourceName={session.sourceMeta?.name || 'Loading...'}
+        sourceType={session.sourceMeta?.type || ''}
+        onPrev={() => session.loadReview('backward', session.review?._id)}
+        onNext={() => session.saveAndNext()}
+        onApproveAll={session.approveAll}
+        onSaveAndNext={session.saveAndNext}
+        isLoading={session.isLoading}
+      />
+
+      {/* Split panel */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left: Source Viewer */}
+        <div className="w-1/2 border-r border-gray-200 dark:border-gray-700">
           <SourceViewer
-            sourceType={source?.type || 'html'}
-            sourceUrl={source?.url || ''}
-            content={sourceContent}
-            highlights={review.source_highlights}
-            loading={loadingSource}
+            content={session.sourceContent}
+            activeHighlight={activeHighlight}
+            isLoading={session.isLoading}
           />
         </div>
-      </div>
 
-      {/* Right: Data Panel */}
-      <div className="data-panel">
-        <div className="panel-header">
-          <h2>추출된 데이터</h2>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            {review.needs_number_review && (
-              <span className="confidence-badge low">숫자 검토 필요</span>
-            )}
-            <span className={`confidence-badge ${getConfidenceLevel(review.confidence_score)}`}>
-              신뢰도: {((review.confidence_score || 0) * 100).toFixed(0)}%
-            </span>
-          </div>
-        </div>
-        <div className="panel-content">
-          <DataPanel
-            data={review.original_data}
-            corrections={corrections}
-            uncertainNumbers={review.uncertain_numbers}
-            onCorrectionChange={setCorrections}
-          />
-
-          {/* Notes */}
-          <div style={{ marginTop: '1rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>메모</label>
-            <textarea
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="검토 관련 메모를 입력하세요..."
-              style={{
-                width: '100%',
-                padding: '0.5rem',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                minHeight: '80px',
-                resize: 'vertical'
-              }}
+        {/* Right: Data Grid */}
+        <div className="w-1/2">
+          {session.review ? (
+            <DataGrid
+              data={session.review.original_data}
+              selectedIndex={session.selectedRowIndex}
+              rowStatuses={session.rowStatuses}
+              onRowClick={(index) => session.selectRow(index)}
+              confidenceScore={session.review.confidence_score}
             />
-          </div>
-        </div>
-
-        {/* Action Bar */}
-        <div className="action-bar">
-          <div className="nav-buttons">
-            <button className="btn btn-outline" onClick={goPrevious}>
-              ← 이전
-            </button>
-            <span className="progress-info">
-              {reviewData.position} / {reviewData.total_pending}
-            </span>
-            <button className="btn btn-outline" onClick={goNext}>
-              다음 →
-            </button>
-          </div>
-          <div className="action-buttons">
-            <button
-              className="btn btn-primary"
-              onClick={handleApprove}
-              disabled={updateMutation.isPending}
-            >
-              ✓ 검토완료 (1)
-            </button>
-            <button
-              className="btn btn-warning"
-              onClick={handleHold}
-              disabled={updateMutation.isPending}
-            >
-              ⏸ 보류 (2)
-            </button>
-            <button
-              className="btn btn-danger"
-              onClick={corrections.length > 0 ? handleCorrect : handleNeedsCorrection}
-              disabled={updateMutation.isPending}
-            >
-              ✎ {corrections.length > 0 ? '정정완료' : '정정필요'} (3)
-            </button>
-          </div>
+          ) : (
+            <div className="flex items-center justify-center h-full">
+              <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Keyboard Shortcuts Help */}
-      {showShortcuts && (
-        <div className="shortcuts-help">
-          <div><kbd>1</kbd> or <kbd>Enter</kbd> 검토완료</div>
-          <div><kbd>2</kbd> 보류</div>
-          <div><kbd>3</kbd> 정정</div>
-          <div><kbd>←</kbd> 이전</div>
-          <div><kbd>→</kbd> 다음</div>
-          <div><kbd>?</kbd> 단축키 표시/숨김</div>
-        </div>
-      )}
+      {/* Reject Reason Modal */}
+      <RejectReasonModal
+        isOpen={rejectModalOpen}
+        onClose={() => setRejectModalOpen(false)}
+        onConfirm={handleRejectConfirm}
+      />
     </div>
   )
 }
 
-function getConfidenceLevel(score?: number): 'high' | 'medium' | 'low' {
-  if (!score) return 'low'
-  if (score >= 0.8) return 'high'
-  if (score >= 0.5) return 'medium'
-  return 'low'
+// ============================================================
+// Review Dashboard Sub-component
+// ============================================================
+
+interface ReviewDashboardProps {
+  dashboard?: ReviewDashboardData
+  resumeInfo?: {
+    has_bookmark: boolean
+    last_review_id?: string
+    last_reviewed_at?: string
+    remaining_after_bookmark?: number
+    total_pending: number
+  }
+  isLoading: boolean
+  onStart: () => void
+  onResume: () => void
+}
+
+function ReviewDashboard({ dashboard, resumeInfo, isLoading, onStart, onResume }: ReviewDashboardProps) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Data Review</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            Verify and approve extracted data before production
+          </p>
+        </div>
+        <div className="flex gap-2">
+          {resumeInfo?.has_bookmark && (
+            <Button variant="outline" onClick={onResume}>
+              <RotateCcw className="w-4 h-4 mr-1" />
+              Resume ({resumeInfo.remaining_after_bookmark} remaining)
+            </Button>
+          )}
+          <Button variant="primary" onClick={onStart} disabled={!dashboard?.pending_count}>
+            <Play className="w-4 h-4 mr-1" />
+            Start Review
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard
+          icon={ClipboardCheck}
+          label="Pending"
+          value={dashboard?.pending_count ?? 0}
+          color="blue"
+        />
+        <StatCard
+          icon={CheckCircle2}
+          label="Reviewed Today"
+          value={dashboard?.today_reviewed ?? 0}
+          color="green"
+        />
+        <StatCard
+          icon={TrendingUp}
+          label="Approval Rate"
+          value={`${(dashboard?.approval_rate ?? 0).toFixed(1)}%`}
+          color="emerald"
+        />
+        <StatCard
+          icon={BarChart3}
+          label="Avg Confidence"
+          value={`${((dashboard?.avg_confidence ?? 0) * 100).toFixed(0)}%`}
+          color="purple"
+        />
+      </div>
+
+      {/* Number review alert */}
+      {dashboard?.needs_number_review_count ? (
+        <div className="flex items-center gap-3 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+          <AlertTriangle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">
+              {dashboard.needs_number_review_count} items need number verification
+            </p>
+            <p className="text-xs text-yellow-600 dark:text-yellow-400">
+              These records have uncertain numeric values that require manual review.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {/* By Source */}
+      {dashboard?.by_source && dashboard.by_source.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Pending by Source</h3>
+          </div>
+          <div className="divide-y divide-gray-100 dark:divide-gray-700">
+            {dashboard.by_source.map((source) => (
+              <div key={source.source_id} className="flex items-center justify-between px-4 py-3">
+                <span className="text-sm text-gray-700 dark:text-gray-300">{source.source_name}</span>
+                <Badge variant="info">{source.pending_count}</Badge>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recent Reviews */}
+      {dashboard?.recent_reviews && dashboard.recent_reviews.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Recent Reviews</h3>
+          </div>
+          <div className="divide-y divide-gray-100 dark:divide-gray-700">
+            {dashboard.recent_reviews.slice(0, 5).map((review) => (
+              <div key={review._id} className="flex items-center justify-between px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={
+                      review.review_status === 'approved'
+                        ? 'success'
+                        : review.review_status === 'corrected'
+                          ? 'warning'
+                          : 'default'
+                    }
+                  >
+                    {review.review_status}
+                  </Badge>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {review.reviewed_at
+                      ? new Date(review.reviewed_at).toLocaleString()
+                      : ''}
+                  </span>
+                </div>
+                <span className="text-xs text-gray-400">
+                  {review.confidence_score
+                    ? `${(review.confidence_score * 100).toFixed(0)}%`
+                    : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Keyboard shortcuts help */}
+      <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Keyboard Shortcuts</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          {[
+            { key: 'Enter', action: 'Approve row' },
+            { key: 'Space', action: 'Flag row' },
+            { key: 'Backspace', action: 'Reject row' },
+            { key: 'Ctrl+Enter', action: 'Approve all' },
+            { key: '↑ / ↓', action: 'Navigate rows' },
+            { key: 'Ctrl+Z', action: 'Undo' },
+            { key: 'Esc', action: 'Back to dashboard' },
+          ].map(({ key, action }) => (
+            <div key={key} className="flex items-center gap-2">
+              <kbd className="px-1.5 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-gray-600 dark:text-gray-300 font-mono">
+                {key}
+              </kbd>
+              <span className="text-gray-500 dark:text-gray-400">{action}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// Stat Card
+// ============================================================
+
+const colorMap: Record<string, string> = {
+  blue: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+  green: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  emerald: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  purple: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+}
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  color,
+}: {
+  icon: any
+  label: string
+  value: string | number
+  color: string
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+      <div className="flex items-center gap-3">
+        <div className={cn('p-2 rounded-lg', colorMap[color])}>
+          <Icon className="w-5 h-5" />
+        </div>
+        <div>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+        </div>
+      </div>
+    </div>
+  )
 }

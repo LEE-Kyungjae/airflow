@@ -6,6 +6,7 @@ import {
   Activity,
   AlertTriangle,
   ShieldCheck,
+  ClipboardCheck,
   Moon,
   Sun,
   Menu,
@@ -22,6 +23,7 @@ const navigation = [
   { name: 'Quick Add', href: '/quick-add', icon: PlusCircle },
   { name: 'Monitoring', href: '/monitoring', icon: Activity },
   { name: 'Data Quality', href: '/data-quality', icon: ShieldCheck },
+  { name: 'Data Review', href: '/reviews', icon: ClipboardCheck },
   { name: 'Errors', href: '/errors', icon: AlertTriangle },
 ]
 
