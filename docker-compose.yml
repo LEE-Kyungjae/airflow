@@ -74,6 +74,8 @@ x-airflow-common:
 services:
   postgres:
     image: postgres:15
+    mem_limit: 512m
+    cpus: 0.5
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
@@ -91,6 +93,8 @@ services:
 
   mongodb:
     image: mongo:7.0
+    mem_limit: 1g
+    cpus: 1.0
     environment:
       MONGO_INITDB_DATABASE: crawler_system
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-crawlerAdmin}
@@ -105,6 +109,8 @@ services:
   airflow-webserver:
     <<: *airflow-common
     command: webserver
+    mem_limit: 2g
+    cpus: 1.0
     ports:
       - "8080:8080"
     healthcheck:
@@ -124,6 +130,8 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    mem_limit: 2g
+    cpus: 1.0
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
       interval: 30s
@@ -141,6 +149,8 @@ services:
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
+    mem_limit: 1g
+    cpus: 0.5
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
       interval: 30s
@@ -232,6 +242,8 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+    mem_limit: 512m
+    cpus: 0.5
     ports:
       - "8000:8000"
     environment:
@@ -259,14 +271,32 @@ services:
     networks:
       - crawler-network
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    mem_limit: 128m
+    cpus: 0.25
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    restart: always
+    networks:
+      - crawler-network
+
   # Selenium Grid for dynamic page crawling (internal only)
   selenium-hub:
     image: selenium/hub:4.16.1
+    mem_limit: 512m
+    cpus: 0.5
     networks:
       - crawler-network
 
   chrome:
     image: selenium/node-chrome:4.16.1
+    mem_limit: 2g
+    cpus: 1.0
     shm_size: 2gb
     depends_on:
       - selenium-hub
@@ -281,6 +311,8 @@ services:
   # Prometheus for metrics collection
   prometheus:
     image: prom/prometheus:v2.48.0
+    mem_limit: 512m
+    cpus: 0.5
     ports:
       - "9090:9090"
     volumes:
@@ -299,6 +331,8 @@ services:
   # Pushgateway for batch job metrics (internal only)
   pushgateway:
     image: prom/pushgateway:v1.6.2
+    mem_limit: 128m
+    cpus: 0.25
     restart: always
     networks:
       - crawler-network
@@ -306,12 +340,15 @@ services:
   # Grafana for visualization (optional)
   grafana:
     image: grafana/grafana:10.2.2
+    mem_limit: 256m
+    cpus: 0.5
     ports:
       - "3001:3000"
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: 'false'
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

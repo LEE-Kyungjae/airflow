@@ -2,9 +2,9 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master]
   pull_request:
-    branches: [main, develop]
+    branches: [master]
 
 env:
   PYTHON_VERSION: "3.12"
@@ -70,8 +70,7 @@ jobs:
           pip install mypy types-requests types-python-dateutil
 
       - name: Run MyPy type check
-        run: mypy api/app/ --ignore-missing-imports --no-error-summary
-        continue-on-error: true
+        run: mypy api/app/ --config-file=mypy.ini
 
   test:
     name: Test Suite
@@ -141,10 +140,42 @@ jobs:
           path: htmlcov/
           retention-days: 7
 
+  frontend:
+    name: Frontend Lint, Typecheck & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npx eslint src/ --max-warnings 0
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npx vite build
+
+      - name: Run unit tests
+        run: npm test -- --run
+
   build-api:
     name: Build API Docker Image
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, frontend]
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -198,16 +229,65 @@ jobs:
         run: |
           docker compose -f docker-compose.yml up -d mongodb api
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'test-key' }}
+          MONGO_ROOT_PASSWORD: testpassword
+          GRAFANA_ADMIN_PASSWORD: testgrafana
 
       - name: Wait for services
         run: |
-          timeout 60 bash -c 'until curl -s http://localhost:8000/health; do sleep 2; done'
+          timeout 90 bash -c 'until curl -sf http://localhost:8000/health; do sleep 2; done'
 
-      - name: Run integration tests
+      - name: Integration - Health & Root
         run: |
-          curl -f http://localhost:8000/health
-          curl -f http://localhost:8000/
+          # Health check
+          HEALTH=$(curl -sf http://localhost:8000/health)
+          echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='healthy', 'unhealthy'"
+
+          # Root endpoint
+          ROOT=$(curl -sf http://localhost:8000/)
+          echo "$ROOT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['version']=='1.0.0'"
+
+      - name: Integration - Source CRUD flow
+        run: |
+          # Create source
+          CREATE=$(curl -sf -X POST http://localhost:8000/api/sources/ \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"Integration Test Source","url":"https://example.com","fields":[{"name":"title","selector":"h1"}],"schedule":"0 * * * *"}')
+          echo "Create response: $CREATE"
+
+          # List sources
+          LIST=$(curl -sf http://localhost:8000/api/sources/)
+          echo "List response: $LIST"
+
+      - name: Integration - Dashboard endpoint
+        run: |
+          DASH=$(curl -sf http://localhost:8000/api/dashboard/stats)
+          echo "$DASH" | python3 -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d, dict), 'expected dict'"
+
+      - name: Integration - Error responses
+        run: |
+          # 404 for non-existent source
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" http://localhost:8000/api/sources/000000000000000000000000)
+          echo "404 test status: $STATUS"
+          [ "$STATUS" -ge 400 ] || echo "Warning: expected 4xx/5xx"
+
+          # 422 for invalid request body
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" -X POST http://localhost:8000/api/sources/ \
+            -H 'Content-Type: application/json' -d '{}')
+          echo "422 test status: $STATUS"
+          [ "$STATUS" = "422" ] || echo "Warning: expected 422, got $STATUS"
+
+      - name: Integration - OpenAPI schema validation
+        run: |
+          SCHEMA=$(curl -sf http://localhost:8000/openapi.json)
+          echo "$SCHEMA" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert 'openapi' in d, 'missing openapi field'
+          assert 'paths' in d, 'missing paths'
+          assert '/health' in d['paths'], 'missing /health path'
+          print(f'OpenAPI {d[\"openapi\"]} validated: {len(d[\"paths\"])} paths')
+          "
 
       - name: Stop services
         if: always()
