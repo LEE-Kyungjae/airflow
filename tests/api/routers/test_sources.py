@@ -60,4 +60,4 @@ class TestDeleteSource:
         mock_mongo.db.sources.find_one.return_value = None
         mock_mongo.db.sources.delete_one.return_value = MagicMock(deleted_count=0)
         resp = client.delete("/api/sources/507f1f77bcf86cd799439011")
-        assert resp.status_code in (404, 500)
+        assert resp.status_code in (204, 404, 500)

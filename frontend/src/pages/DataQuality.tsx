@@ -184,7 +184,7 @@ export default function DataQuality() {
                         border: '1px solid #e5e7eb',
                         borderRadius: '8px',
                       }}
-                      formatter={(value: number) => [`${value.toFixed(1)}%`, '품질 점수']}
+                      formatter={(value: number | undefined) => [`${(value ?? 0).toFixed(1)}%`, '품질 점수']}
                     />
                     <Area
                       type="monotone"

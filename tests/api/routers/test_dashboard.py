@@ -12,7 +12,7 @@ class TestDashboardStats:
         mock_mongo.db.error_logs.aggregate.return_value = []
         mock_mongo.db.crawl_results.aggregate.return_value = []
 
-        resp = client.get("/api/dashboard/stats")
+        resp = client.get("/api/dashboard/")
         assert resp.status_code == 200
 
     def test_dashboard_stats_response_structure(self, client, mock_mongo):
@@ -25,7 +25,7 @@ class TestDashboardStats:
         mock_mongo.db.error_logs.aggregate.return_value = []
         mock_mongo.db.crawl_results.aggregate.return_value = []
 
-        resp = client.get("/api/dashboard/stats")
+        resp = client.get("/api/dashboard/")
         if resp.status_code == 200:
             data = resp.json()
             assert isinstance(data, dict)

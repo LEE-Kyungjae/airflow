@@ -1,14 +1,13 @@
 import { useState, useCallback, useRef } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { useToast } from './useToast'
 import {
   getNextReview,
   getReviewSourceContent,
   updateReview,
   revertReview,
-  batchApprove,
 } from '@/api/reviews'
-import type { ReviewItem, SourceContentData, ReviewAction, RejectionReason } from '@/types'
+import type { ReviewItem, SourceContentData } from '@/types'
 
 interface UndoEntry {
   reviewId: string
@@ -158,17 +157,6 @@ export function useReviewSession() {
     },
     []
   )
-
-  const approveRowMutation = useMutation({
-    mutationFn: async ({ reviewId, status }: { reviewId: string; status: string }) => {
-      const duration = Date.now() - sessionStartTime.current
-      return updateReview(reviewId, {
-        status,
-        review_duration_ms: duration,
-      })
-    },
-    onError: () => toast.error('Failed to update review'),
-  })
 
   const approveRow = useCallback(
     (index: number) => {

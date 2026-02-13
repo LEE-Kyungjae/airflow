@@ -10,7 +10,6 @@ interface Props {
 }
 
 export default function SourceViewer({ sourceType, sourceUrl, content, highlights, loading }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null)
   const [activeHighlight, setActiveHighlight] = useState<string | null>(null)
 
   if (loading) {
@@ -72,7 +71,7 @@ function HtmlViewer({
   htmlSnapshot,
   highlights,
   activeHighlight,
-  onHighlightClick
+  onHighlightClick: _onHighlightClick
 }: {
   url: string
   htmlSnapshot?: string
@@ -345,7 +344,7 @@ function JsonViewer({
 function TableViewer({
   data,
   highlights,
-  activeHighlight
+  activeHighlight: _activeHighlight
 }: {
   data?: any
   highlights: SourceHighlight[]
