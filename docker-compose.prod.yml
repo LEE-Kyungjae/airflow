@@ -1,69 +1,504 @@
+# =============================================================================
+# docker-compose.prod.yml -- Production override
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# This file overrides the development compose for production deployments:
+#   - Resource limits and reservations for every service
+#   - Restart policies (unless-stopped)
+#   - Health checks for every service (including MongoDB)
+#   - No source-code volume mounts -- code is baked into images
+#   - Network segmentation: db-network (internal) + app-network (bridged)
+#   - Log rotation via json-file driver with size caps
+#   - All secrets supplied via environment variables (no hardcoded values)
+# =============================================================================
+
 version: '3.8'
 
-# Production overrides
-# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+    tag: "{{.Name}}"
+
+x-airflow-common:
+  &airflow-common
+  # Production uses a pre-built image. Build once with:
+  #   docker build -t crawler-airflow:TAG ./airflow
+  image: ${REGISTRY:-}crawler-airflow:${IMAGE_TAG:-latest}
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?AIRFLOW_FERNET_KEY is required}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'false'
+    AIRFLOW__WEBSERVER__RBAC: 'true'
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?AIRFLOW_WEBSERVER_SECRET_KEY is required}
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+    MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
+    MONGODB_DATABASE: crawler_system
+    SMTP_HOST: ${SMTP_HOST}
+    SMTP_PORT: ${SMTP_PORT:-587}
+    SMTP_USER: ${SMTP_USER}
+    SMTP_PASSWORD: ${SMTP_PASSWORD}
+    ALERT_EMAIL: ${ALERT_EMAIL}
+    PROMETHEUS_PUSHGATEWAY_URL: http://pushgateway:9091
+    BACKUP_DIR: /data/backups
+    BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    BACKUP_CLOUD_PROVIDER: ${BACKUP_CLOUD_PROVIDER:-local}
+    BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+    BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-mongodb-backups}
+    BACKUP_GCS_BUCKET: ${BACKUP_GCS_BUCKET:-}
+    BACKUP_GCS_PREFIX: ${BACKUP_GCS_PREFIX:-mongodb-backups}
+    BACKUP_COMPRESSION: ${BACKUP_COMPRESSION:-true}
+    BACKUP_VERIFY: ${BACKUP_VERIFY:-true}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    PLAYWRIGHT_BROWSERS_PATH: /home/airflow/.cache/ms-playwright
+    PLAYWRIGHT_CHROMIUM_HEADLESS: '1'
+    AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+    AI_BASE_URL: ${AI_BASE_URL:-}
+  # Production: no source-code mounts. DAGs + crawlers baked into image.
+  volumes:
+    - airflow-logs:/opt/airflow/logs
+    - backup-data:/data/backups
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+    mongodb:
+      condition: service_healthy
 
 services:
+  # ===========================================================================
+  # Databases -- internal network only, no host port exposure
+  # ===========================================================================
   postgres:
-    mem_limit: 1g
-    cpus: 1.0
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+          cpus: '0.25'
+    ports: []                  # override: remove host-exposed ports
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in production}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - db-network
 
   mongodb:
-    mem_limit: 2g
-    cpus: 2.0
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
+        reservations:
+          memory: 512m
+          cpus: '0.5'
+    ports: []                  # override: remove host-exposed ports
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.5", "--quiet"]
+    volumes:
+      - mongodb-data:/data/db
+      # init-scripts only needed on first boot; mount read-only
+      - ./mongodb/init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - db-network
 
+  # ===========================================================================
+  # Airflow
+  # ===========================================================================
   airflow-webserver:
-    mem_limit: 4g
-    cpus: 2.0
-    environment:
-      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'false'
-      AIRFLOW__WEBSERVER__RBAC: 'true'
+    <<: *airflow-common
+    command: webserver
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: '2.0'
+        reservations:
+          memory: 1g
+          cpus: '0.5'
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - app-network
+      - db-network
 
   airflow-scheduler:
-    mem_limit: 4g
-    cpus: 2.0
-
-  api:
-    mem_limit: 1g
-    cpus: 1.0
-    environment:
-      ENV: production
-
-  nginx:
-    image: nginx:1.25-alpine
-    mem_limit: 128m
-    cpus: 0.25
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+    <<: *airflow-common
+    command: scheduler
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: '2.0'
+        reservations:
+          memory: 1g
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    logging: *logging
     depends_on:
-      - api
-      - frontend
-    restart: always
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
     networks:
-      - crawler-network
+      - app-network
+      - db-network
 
-  alertmanager:
-    image: prom/alertmanager:v0.26.0
-    mem_limit: 128m
-    cpus: 0.25
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '0.5'
+        reservations:
+          memory: 512m
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - app-network
+      - db-network
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins}
+        chown -R "${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:?Airflow admin username is required}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:?Airflow admin password is required}
+    user: "0:0"
+    restart: "no"
+    logging: *logging
+    networks:
+      - app-network
+      - db-network
+
+  # ===========================================================================
+  # Application services
+  # ===========================================================================
+  api:
+    image: ${REGISTRY:-}crawler-api:${IMAGE_TAG:-latest}
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      target: production
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+          cpus: '0.25'
     ports:
-      - "9093:9093"
+      - "${API_PORT:-8000}:8000"
+    environment:
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
+      MONGODB_DATABASE: crawler_system
+      AIRFLOW_BASE_URL: http://airflow-webserver:8080
+      AIRFLOW_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME}
+      AIRFLOW_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PROMETHEUS_PUSHGATEWAY_URL: http://pushgateway:9091
+      BACKUP_DIR: /data/backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_CLOUD_PROVIDER: ${BACKUP_CLOUD_PROVIDER:-local}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_GCS_BUCKET: ${BACKUP_GCS_BUCKET:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      ENV: production
     volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-    restart: always
+      - backup-data:/data/backups
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
     networks:
-      - crawler-network
+      - app-network
+      - db-network
 
+  frontend:
+    image: ${REGISTRY:-}crawler-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
+        reservations:
+          memory: 64m
+          cpus: '0.1'
+    ports:
+      - "${FRONTEND_PORT:-3000}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /run
+    networks:
+      - app-network
+
+  # ===========================================================================
+  # Selenium Grid -- internal only
+  # ===========================================================================
+  selenium-hub:
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '0.5'
+        reservations:
+          memory: 256m
+          cpus: '0.25'
+    ports: []                  # override: remove host-exposed ports
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:4444/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - app-network
+
+  chrome:
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '1.0'
+        reservations:
+          memory: 1g
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:5555/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - app-network
+
+  # ===========================================================================
+  # Monitoring
+  # ===========================================================================
   prometheus:
-    mem_limit: 1g
-    cpus: 1.0
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+          cpus: '0.25'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=5GB'
+      - '--web.enable-admin-api'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - app-network
+
+  pushgateway:
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
+        reservations:
+          memory: 64m
+          cpus: '0.1'
+    ports: []                  # override: remove host-exposed ports
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - app-network
 
   grafana:
-    mem_limit: 512m
-    cpus: 0.5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '0.5'
+        reservations:
+          memory: 128m
+          cpus: '0.25'
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is required}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: 'false'
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+      GF_LOG_LEVEL: warn
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - app-network
+
+  # ===========================================================================
+  # Production-only: alertmanager
+  # ===========================================================================
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
+        reservations:
+          memory: 64m
+          cpus: '0.1'
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      - app-network
+
+volumes:
+  postgres-db-volume:
+    driver: local
+  mongodb-data:
+    driver: local
+  airflow-logs:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  backup-data:
+    driver: local
+
+networks:
+  db-network:
+    driver: bridge
+    internal: true       # no external access -- databases only
+  app-network:
+    driver: bridge

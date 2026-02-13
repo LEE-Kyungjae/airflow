@@ -1,0 +1,23 @@
+# api/.dockerignore
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.env
+.env.*
+*.md
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose*
+tests
+venv
+.venv
+*.egg-info
+dist
+build

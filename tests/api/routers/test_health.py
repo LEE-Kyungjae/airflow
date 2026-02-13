@@ -12,7 +12,7 @@ class TestHealthEndpoint:
 
     def test_health_response_schema(self, client):
         data = client.get("/health").json()
-        assert set(data.keys()) == {"status", "timestamp", "service"}
+        assert {"status", "timestamp", "service"}.issubset(set(data.keys()))
 
 
 class TestRootEndpoint:

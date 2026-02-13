@@ -45,3 +45,6 @@ cryptography>=42.0.0
 
 # Browser automation (for authenticated crawling)
 playwright>=1.41.0
+
+# System monitoring
+psutil>=5.9.0

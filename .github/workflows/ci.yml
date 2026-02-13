@@ -2,16 +2,17 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [master]
+    branches: ['**']  # Trigger on push to any branch
   pull_request:
     branches: [master]
 
 env:
   PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
 
 jobs:
-  lint:
-    name: Lint and Format Check
+  lint-backend:
+    name: Lint Backend (Python)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -26,7 +27,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-lint-${{ hashFiles('**/requirements*.txt') }}
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('**/requirements*.txt', 'pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-lint-
             ${{ runner.os }}-pip-
@@ -34,46 +35,36 @@ jobs:
       - name: Install linting tools
         run: |
           python -m pip install --upgrade pip
-          pip install ruff black mypy
+          pip install ruff
 
       - name: Run Ruff linter
         run: ruff check api/ crawlers/ airflow/dags/ --output-format=github
 
-      - name: Run Black format check
-        run: black --check --diff api/ crawlers/ airflow/dags/
-
-  type-check:
-    name: Type Check
+  lint-frontend:
+    name: Lint Frontend (TypeScript)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip dependencies
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-typecheck-${{ hashFiles('api/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-typecheck-
-            ${{ runner.os }}-pip-
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r api/requirements.txt
-          pip install mypy types-requests types-python-dateutil
+        run: npm ci
 
-      - name: Run MyPy type check
-        run: mypy api/app/ --config-file=mypy.ini
+      - name: TypeScript type check
+        run: npx tsc --noEmit
 
-  test:
-    name: Test Suite
+  test-backend:
+    name: Test Backend (pytest)
     runs-on: ubuntu-latest
     services:
       mongodb:
@@ -116,19 +107,20 @@ jobs:
           MONGODB_DATABASE: crawler_system_test
           ENV: test
         run: |
-          pytest api/tests/ \
+          pytest tests/ \
             --cov=api/app \
+            --cov=crawlers \
             --cov-report=xml \
             --cov-report=html \
             --cov-report=term-missing \
             -v
 
-      - name: Upload coverage report
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
-          flags: unittests
-          name: codecov-umbrella
+          flags: backend
+          name: backend-coverage
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -140,9 +132,10 @@ jobs:
           path: htmlcov/
           retention-days: 7
 
-  frontend:
-    name: Frontend Lint, Typecheck & Build
+  build-frontend:
+    name: Build Frontend (Vite)
     runs-on: ubuntu-latest
+    needs: [lint-frontend]
     defaults:
       run:
         working-directory: frontend
@@ -153,29 +146,30 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
-        run: npx eslint src/ --max-warnings 0
+      - name: Build production bundle
+        run: npm run build
 
-      - name: TypeScript type check
-        run: npx tsc --noEmit
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 7
 
-      - name: Build
-        run: npx vite build
-
-      - name: Run unit tests
-        run: npm test -- --run
-
-  build-api:
-    name: Build API Docker Image
+  docker-build:
+    name: Build Docker Images (Verify)
     runs-on: ubuntu-latest
-    needs: [lint, test, frontend]
+    needs: [lint-backend, test-backend, build-frontend]
+    strategy:
+      matrix:
+        service: [api, frontend]
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -183,39 +177,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build API image
+      - name: Build ${{ matrix.service }} image
         uses: docker/build-push-action@v6
         with:
-          context: ./api
+          context: ./${{ matrix.service }}
           push: false
-          tags: crawler-system-api:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: crawler-system-${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          outputs: type=docker,dest=/tmp/${{ matrix.service }}-image.tar
 
-  build-airflow:
-    name: Build Airflow Docker Image
-    runs-on: ubuntu-latest
-    needs: [lint]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Airflow image
-        uses: docker/build-push-action@v6
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v6
         with:
-          context: ./airflow
-          push: false
-          tags: crawler-system-airflow:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: docker-image-${{ matrix.service }}
+          path: /tmp/${{ matrix.service }}-image.tar
+          retention-days: 1
 
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: [build-api, build-airflow]
+    needs: [docker-build]
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code

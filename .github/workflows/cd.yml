@@ -1,4 +1,4 @@
-name: CD Pipeline
+name: Deployment Pipeline
 
 on:
   push:
@@ -15,10 +15,16 @@ on:
         options:
           - staging
           - production
+      rollback:
+        description: 'Rollback to previous version'
+        required: false
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
   API_IMAGE_NAME: ${{ github.repository }}/api
+  FRONTEND_IMAGE_NAME: ${{ github.repository }}/frontend
   AIRFLOW_IMAGE_NAME: ${{ github.repository }}/airflow
 
 jobs:
@@ -31,8 +37,12 @@ jobs:
 
     outputs:
       api_image: ${{ steps.meta-api.outputs.tags }}
+      frontend_image: ${{ steps.meta-frontend.outputs.tags }}
       airflow_image: ${{ steps.meta-airflow.outputs.tags }}
       version: ${{ steps.version.outputs.version }}
+      previous_api_image: ${{ steps.save-tags.outputs.previous_api }}
+      previous_frontend_image: ${{ steps.save-tags.outputs.previous_frontend }}
+      previous_airflow_image: ${{ steps.save-tags.outputs.previous_airflow }}
 
     steps:
       - name: Checkout code
@@ -46,6 +56,14 @@ jobs:
           else
             echo "version=${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Save previous image tags for rollback
+        id: save-tags
+        run: |
+          # Try to get current production tags (for rollback)
+          echo "previous_api=${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "previous_frontend=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "previous_airflow=${{ env.REGISTRY }}/${{ env.AIRFLOW_IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -72,6 +90,19 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
 
+      - name: Extract metadata for Frontend image
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
       - name: Extract metadata for Airflow image
         id: meta-airflow
         uses: docker/metadata-action@v5
@@ -83,6 +114,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push API image
         uses: docker/build-push-action@v6
@@ -99,6 +131,21 @@ jobs:
             VCS_REF=${{ github.sha }}
             VERSION=${{ steps.version.outputs.version }}
 
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.version.outputs.version }}
+
       - name: Build and push Airflow image
         uses: docker/build-push-action@v6
         with:
@@ -107,8 +154,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-airflow.outputs.tags }}
           labels: ${{ steps.meta-airflow.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=airflow
+          cache-to: type=gha,mode=max,scope=airflow
           build-args: |
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             VCS_REF=${{ github.sha }}
@@ -145,11 +192,13 @@ jobs:
 
             # Pull new images
             export API_IMAGE="${{ needs.build-and-push.outputs.api_image }}"
+            export FRONTEND_IMAGE="${{ needs.build-and-push.outputs.frontend_image }}"
             export AIRFLOW_IMAGE="${{ needs.build-and-push.outputs.airflow_image }}"
 
-            docker compose pull api airflow-webserver airflow-scheduler
+            docker compose pull api frontend airflow-webserver airflow-scheduler
 
             # Rolling update: restart services one by one
+            docker compose up -d --no-deps frontend
             docker compose up -d --no-deps api
             docker compose up -d --no-deps airflow-webserver
             docker compose up -d --no-deps airflow-scheduler
@@ -235,11 +284,14 @@ jobs:
 
             # Pull new images
             export API_IMAGE="${{ needs.build-and-push.outputs.api_image }}"
+            export FRONTEND_IMAGE="${{ needs.build-and-push.outputs.frontend_image }}"
             export AIRFLOW_IMAGE="${{ needs.build-and-push.outputs.airflow_image }}"
 
-            docker compose pull api airflow-webserver airflow-scheduler
+            docker compose pull api frontend airflow-webserver airflow-scheduler
 
             # Rolling update with zero-downtime
+            docker compose up -d --no-deps frontend
+            sleep 3
             docker compose up -d --no-deps api
             sleep 5
             docker compose up -d --no-deps airflow-webserver
@@ -289,8 +341,13 @@ jobs:
             echo "=== ROLLBACK: Restoring previous version ==="
 
             if [ -f /tmp/pre-deploy-images.txt ]; then
-              docker compose up -d --no-deps api airflow-webserver airflow-scheduler
-              echo "Rollback completed - services restored"
+              # Use previous image tags for rollback
+              export API_IMAGE="${{ needs.build-and-push.outputs.previous_api_image }}"
+              export FRONTEND_IMAGE="${{ needs.build-and-push.outputs.previous_frontend_image }}"
+              export AIRFLOW_IMAGE="${{ needs.build-and-push.outputs.previous_airflow_image }}"
+
+              docker compose up -d --no-deps frontend api airflow-webserver airflow-scheduler
+              echo "Rollback completed - services restored to previous version"
             else
               echo "WARNING: No rollback state found"
             fi
@@ -303,7 +360,14 @@ jobs:
           body: |
             ## Docker Images
             - API: `${{ env.REGISTRY }}/${{ env.API_IMAGE_NAME }}:${{ needs.build-and-push.outputs.version }}`
+            - Frontend: `${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ needs.build-and-push.outputs.version }}`
             - Airflow: `${{ env.REGISTRY }}/${{ env.AIRFLOW_IMAGE_NAME }}:${{ needs.build-and-push.outputs.version }}`
+
+            ## Deployment
+            This version has been automatically deployed to production.
+
+            ## Rollback
+            If needed, rollback using workflow dispatch with previous image tags.
 
       - name: Notify deployment result
         if: always()
@@ -317,26 +381,41 @@ jobs:
   rollback:
     name: Rollback (Manual)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && failure()
-    needs: [deploy-staging, deploy-production]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true'
+    environment:
+      name: ${{ github.event.inputs.environment }}
     steps:
       - name: Rollback deployment
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.PRODUCTION_HOST }}
+          host: ${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_HOST || secrets.STAGING_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -e
             cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
-            echo "=== Manual rollback initiated ==="
+            echo "=== Manual rollback initiated for ${{ github.event.inputs.environment }} ==="
 
             # Restore from saved state
             if [ -f /tmp/pre-deploy-images.txt ]; then
-              docker compose down api airflow-webserver airflow-scheduler
-              docker compose up -d api airflow-webserver airflow-scheduler
+              echo "Rolling back to previous image versions..."
+              docker compose down frontend api airflow-webserver airflow-scheduler
+              docker compose up -d frontend api airflow-webserver airflow-scheduler
               echo "Manual rollback completed"
             else
               echo "No saved state found. Restarting current images..."
-              docker compose restart api airflow-webserver airflow-scheduler
+              docker compose restart frontend api airflow-webserver airflow-scheduler
             fi
+
+      - name: Verify rollback health
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_HOST || secrets.STAGING_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            echo "Verifying services after rollback..."
+            sleep 10
+            curl -sf http://localhost:8000/health || echo "WARNING: API health check failed"
+            docker compose ps --format "{{.Name}} {{.Status}}"
