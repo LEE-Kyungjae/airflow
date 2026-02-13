@@ -232,6 +232,70 @@ jobs:
             echo "ERROR: API health check failed after $MAX_RETRIES attempts"
             exit 1
 
+      - name: Run staging smoke tests
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            API_URL="http://localhost:8000"
+            echo "=== Running staging smoke tests ==="
+
+            # Test 1: Health
+            HEALTH=$(curl -sf "${API_URL}/health")
+            echo "${HEALTH}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='healthy', f'unhealthy: {d}'"
+            echo "PASS: /health"
+
+            # Test 2: Root
+            ROOT=$(curl -sf "${API_URL}/")
+            echo "${ROOT}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d"
+            echo "PASS: / (root)"
+
+            # Test 3: OpenAPI
+            SCHEMA=$(curl -sf "${API_URL}/openapi.json")
+            echo "${SCHEMA}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'paths' in d; print(f'OpenAPI: {len(d[\"paths\"])} paths')"
+            echo "PASS: /openapi.json"
+
+            # Test 4: Dashboard
+            DASH_STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${API_URL}/api/dashboard/stats")
+            [ "${DASH_STATUS}" -lt 500 ] || { echo "FAIL: dashboard HTTP ${DASH_STATUS}"; exit 1; }
+            echo "PASS: /api/dashboard/stats (HTTP ${DASH_STATUS})"
+
+            # Test 5: Sources
+            SRC_STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${API_URL}/api/sources/")
+            [ "${SRC_STATUS}" -lt 500 ] || { echo "FAIL: sources HTTP ${SRC_STATUS}"; exit 1; }
+            echo "PASS: /api/sources/ (HTTP ${SRC_STATUS})"
+
+            # Test 6: Error handling
+            ERR_STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${API_URL}/api/sources/000000000000000000000000")
+            [ "${ERR_STATUS}" -ge 400 ] && [ "${ERR_STATUS}" -lt 500 ] || echo "WARN: expected 4xx, got ${ERR_STATUS}"
+            echo "PASS: error handling"
+
+            echo "=== All staging smoke tests passed ==="
+
+      - name: Auto-rollback staging on smoke failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.STAGING_APP_PATH || '/opt/crawler-system' }}
+            echo "=== STAGING ROLLBACK: smoke tests failed ==="
+
+            if [ -f scripts/rollback.sh ]; then
+              bash scripts/rollback.sh --no-smoke
+            elif [ -f /tmp/pre-deploy-state.json ]; then
+              docker compose down frontend api
+              docker compose up -d frontend api
+            fi
+
+            echo "=== Staging rollback complete ==="
+
       - name: Notify deployment success
         if: success()
         run: |
@@ -328,7 +392,45 @@ jobs:
             echo "ERROR: Production health check failed - triggering rollback"
             exit 1
 
-      - name: Auto-rollback on health check failure
+      - name: Run production smoke tests
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            API_URL="http://localhost:8000"
+            echo "=== Running production smoke tests ==="
+
+            # Test 1: Health
+            HEALTH=$(curl -sf "${API_URL}/health")
+            echo "${HEALTH}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='healthy'"
+            echo "PASS: /health"
+
+            # Test 2: Root
+            ROOT=$(curl -sf "${API_URL}/")
+            echo "${ROOT}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d"
+            echo "PASS: / (root)"
+
+            # Test 3: OpenAPI
+            SCHEMA=$(curl -sf "${API_URL}/openapi.json")
+            echo "${SCHEMA}" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'paths' in d"
+            echo "PASS: /openapi.json"
+
+            # Test 4: Dashboard
+            DASH=$(curl -o /dev/null -s -w "%{http_code}" "${API_URL}/api/dashboard/stats")
+            [ "${DASH}" -lt 500 ] || { echo "FAIL: dashboard HTTP ${DASH}"; exit 1; }
+            echo "PASS: /api/dashboard/stats"
+
+            # Test 5: Sources
+            SRC=$(curl -o /dev/null -s -w "%{http_code}" "${API_URL}/api/sources/")
+            [ "${SRC}" -lt 500 ] || { echo "FAIL: sources HTTP ${SRC}"; exit 1; }
+            echo "PASS: /api/sources/"
+
+            echo "=== All production smoke tests passed ==="
+
+      - name: Auto-rollback on health check or smoke failure
         if: failure()
         uses: appleboy/ssh-action@v1
         with:
@@ -340,8 +442,12 @@ jobs:
             cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
             echo "=== ROLLBACK: Restoring previous version ==="
 
-            if [ -f /tmp/pre-deploy-images.txt ]; then
-              # Use previous image tags for rollback
+            # Prefer the rollback script if available
+            if [ -f scripts/rollback.sh ]; then
+              echo "Using rollback.sh..."
+              bash scripts/rollback.sh --no-smoke
+            elif [ -f /tmp/pre-deploy-images.txt ]; then
+              # Fallback: use previous image tags
               export API_IMAGE="${{ needs.build-and-push.outputs.previous_api_image }}"
               export FRONTEND_IMAGE="${{ needs.build-and-push.outputs.previous_frontend_image }}"
               export AIRFLOW_IMAGE="${{ needs.build-and-push.outputs.previous_airflow_image }}"
@@ -396,8 +502,11 @@ jobs:
             cd ${{ secrets.PRODUCTION_APP_PATH || '/opt/crawler-system' }}
             echo "=== Manual rollback initiated for ${{ github.event.inputs.environment }} ==="
 
-            # Restore from saved state
-            if [ -f /tmp/pre-deploy-images.txt ]; then
+            # Prefer the rollback script
+            if [ -f scripts/rollback.sh ]; then
+              echo "Using rollback.sh..."
+              bash scripts/rollback.sh
+            elif [ -f /tmp/pre-deploy-images.txt ]; then
               echo "Rolling back to previous image versions..."
               docker compose down frontend api airflow-webserver airflow-scheduler
               docker compose up -d frontend api airflow-webserver airflow-scheduler
