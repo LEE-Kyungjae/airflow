@@ -15,7 +15,7 @@ pydantic==2.12.5
 email-validator==2.1.0
 
 # Utilities
-python-dotenv==1.0.0
+python-dotenv==1.2.1
 
 # OpenAI (for direct API calls if needed)
 openai==2.17.0
