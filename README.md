@@ -1,119 +1,99 @@
 # Airflow Crawler System
 
-AI 기반 웹 크롤링 자동화 시스템. GPT를 활용한 크롤러 코드 자동 생성과 Apache Airflow를 통한 스케줄링/모니터링을 지원합니다.
+AI 기반 웹 크롤링 자동화 플랫폼. URL만 입력하면 GPT가 크롤러 코드를 자동 생성하고, Airflow가 스케줄링하며, 실패 시 자가치유까지 수행합니다.
 
-## 주요 기능
+## 핵심 기능
 
-- **AI 크롤러 생성**: URL과 추출할 필드만 정의하면 GPT가 크롤러 코드 자동 생성
-- **Self-Healing**: 크롤링 실패 시 자동 진단 및 코드 수정
-- **다양한 소스 지원**: HTML, PDF, Excel, CSV 파일 크롤링
-- **스케줄 관리**: Cron 표현식 기반 자동 실행
-- **실시간 모니터링**: 대시보드를 통한 상태 확인
-- **에러 추적**: 상세한 에러 로그 및 알림
+| 기능 | 설명 |
+|------|------|
+| **AI 크롤러 생성** | URL + 필드 정의 → GPT가 크롤러 코드 자동 생성 |
+| **Quick Add** | URL만 입력하면 AI가 페이지 분석 후 필드/선택자 자동 설정 |
+| **Self-Healing** | 크롤링 실패 시 자동 진단 → 코드 수정 → 재실행 |
+| **Playwright 크롤링** | SPA/동적 페이지도 브라우저 기반으로 크롤링 |
+| **데이터 리뷰** | 키보드 단축키 기반 빠른 데이터 검수 워크플로우 |
+| **스케줄 관리** | Cron 기반 자동 실행 + Airflow 오케스트레이션 |
+| **듀얼라이트** | MongoDB + PostgreSQL 동시 저장 |
+| **실시간 모니터링** | Prometheus + Grafana 대시보드 |
+| **E2E 테스트** | Playwright 기반 자동화 테스트 |
+| **CI/CD** | GitHub Actions → 스테이징 → 프로덕션 자동 배포 |
 
 ## 기술 스택
 
-| 구성요소 | 기술 |
-|---------|-----|
-| API | FastAPI 0.109.0 |
-| 데이터베이스 | MongoDB 4.6.1 |
-| 오케스트레이션 | Apache Airflow |
-| AI | OpenAI GPT-4o-mini |
-| 크롤링 | BeautifulSoup4, Selenium, pdfplumber |
-| 컨테이너 | Docker, Docker Compose |
+| 레이어 | 기술 |
+|--------|------|
+| **Backend** | FastAPI, Python 3.12 |
+| **Frontend** | React 18, TypeScript, TailwindCSS, Vite |
+| **Database** | MongoDB 7.0, PostgreSQL (듀얼라이트) |
+| **Orchestration** | Apache Airflow 2.10 |
+| **AI** | OpenAI GPT-4o-mini (커스텀 모델 지원) |
+| **Crawling** | Playwright, BeautifulSoup4, Selenium |
+| **Monitoring** | Prometheus, Grafana, Alertmanager |
+| **CI/CD** | GitHub Actions, Docker Compose |
+| **Testing** | pytest (466), Vitest (19), Playwright E2E |
 
 ## 빠른 시작
 
 ### 1. 환경 설정
 
 ```bash
-# 저장소 클론
-git clone https://github.com/your-repo/airflow-crawler-system.git
+git clone https://github.com/LEE-Kyungjae/airflow.git
 cd airflow-crawler-system
 
-# 환경 변수 설정
 cp .env.example .env
 ```
 
-`.env` 파일 수정:
+`.env` 필수값 설정:
 
 ```env
-# 필수 설정
-OPENAI_API_KEY=your-openai-api-key
-MONGODB_URI=mongodb://localhost:27017
-AIRFLOW_WEBSERVER_URL=http://localhost:8080
+# AI (크롤러 자동생성에 필요)
+OPENAI_API_KEY=sk-your-key
 
-# 인증 설정 (프로덕션 필수)
-API_MASTER_KEYS=your-secure-api-key
-JWT_SECRET_KEY=your-jwt-secret-key
+# DB 비밀번호
+MONGO_ROOT_PASSWORD=your-strong-password
+POSTGRES_PASSWORD=your-strong-password
+
+# 보안 키 (각각 고유한 랜덤값)
+AIRFLOW_FERNET_KEY=   # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+JWT_SECRET_KEY=       # python -c "import secrets; print(secrets.token_urlsafe(64))"
 ADMIN_PASSWORD=your-admin-password
-
-# 선택 설정
-ENV=development  # development | production
-AUTH_MODE=optional  # disabled | optional | required
 ```
 
-### 2. Docker로 실행
+### 2. 실행
 
 ```bash
-# 전체 서비스 시작
-docker-compose up -d
+# 개발 모드
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
-# 로그 확인
-docker-compose logs -f api
+# 또는 Windows
+scripts\start_dev.bat
 ```
 
-### 3. 수동 설치
+### 3. 접속
+
+| 서비스 | URL |
+|--------|-----|
+| **Frontend** | http://localhost:5173 |
+| **API Docs** | http://localhost:8000/docs |
+| **Airflow** | http://localhost:8080 |
+| **Grafana** | http://localhost:3000 |
+
+## 사용 예시
+
+### Quick Add (가장 간단한 방법)
 
 ```bash
-# API 서버
-cd api
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-
-# Airflow (별도 터미널)
-cd airflow
-pip install -r requirements.txt
-airflow standalone
-```
-
-## API 사용법
-
-### 인증
-
-모든 쓰기 작업은 인증이 필요합니다. 두 가지 방식 지원:
-
-#### 1. API Key (서비스 간 통신용)
-
-```bash
-# 헤더 방식
-curl -X POST http://localhost:8000/api/sources \
-  -H "X-API-Key: your-api-key" \
+curl -X POST http://localhost:8000/api/quick-add \
   -H "Content-Type: application/json" \
-  -d '{"name": "example", "url": "https://example.com", ...}'
-
-# 쿼리 파라미터 방식
-curl "http://localhost:8000/api/sources?api_key=your-api-key"
+  -d '{"url": "https://github.com/trending", "name": "github-trending"}'
 ```
 
-#### 2. JWT Token (사용자 인증용)
+AI가 페이지를 분석하고 크롤러를 자동 생성합니다.
 
-```bash
-# 로그인
-curl -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
-
-# 응답에서 access_token 사용
-curl -X GET http://localhost:8000/api/sources \
-  -H "Authorization: Bearer eyJ..."
-```
-
-### 소스 생성
+### 소스 직접 등록
 
 ```bash
 curl -X POST http://localhost:8000/api/sources \
-  -H "X-API-Key: your-api-key" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "tech-news",
@@ -121,174 +101,256 @@ curl -X POST http://localhost:8000/api/sources \
     "type": "html",
     "schedule": "0 */6 * * *",
     "fields": [
-      {
-        "name": "title",
-        "selector": "h2.article-title",
-        "data_type": "string"
-      },
-      {
-        "name": "published_at",
-        "selector": "time.date",
-        "data_type": "date",
-        "attribute": "datetime"
-      }
+      {"name": "title", "selector": "h2.headline", "data_type": "string"},
+      {"name": "date", "selector": "time", "data_type": "date", "attribute": "datetime"}
     ]
   }'
 ```
 
-### Quick Add (URL만으로 자동 설정)
+### Frontend에서
 
-```bash
-curl -X POST http://localhost:8000/api/quick-add \
-  -H "X-API-Key: your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://news.example.com/articles",
-    "name": "auto-news"
-  }'
+1. **Dashboard** → 전체 현황 한눈에 확인
+2. **Quick Add** → URL 입력 → AI 분석 → 필드 확인 → 등록
+3. **Sources** → 소스 관리, 수동 실행, 스케줄 변경
+4. **Review** → 크롤링 데이터 검수 (키보드: `a` 승인, `r` 반려, `→` 다음)
+5. **Monitoring** → 파이프라인 상태, 자가치유 세션 확인
+
+## 아키텍처
+
 ```
+┌─────────────────────────────────────────────────────────────┐
+│                        Frontend                             │
+│              React + TypeScript + TailwindCSS                │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ REST API
+┌──────────────────────────▼──────────────────────────────────┐
+│                     FastAPI Backend                          │
+│  Sources │ Crawlers │ Reviews │ Dashboard │ Monitoring       │
+│  Quick Add │ Export │ Data Quality │ Schema Registry         │
+└─────┬────────────┬──────────────────────┬───────────────────┘
+      │            │                      │
+┌─────▼─────┐ ┌───▼──────────┐ ┌─────────▼─────────┐
+│  MongoDB  │ │  PostgreSQL  │ │  Apache Airflow    │
+│  (primary)│ │  (dual-write)│ │  DAG Orchestration │
+└───────────┘ └──────────────┘ │  ├─ Source Manager  │
+                               │  ├─ Dynamic Crawler │
+                               │  ├─ Self-Healing    │
+                               │  └─ Backup          │
+                               └─────────┬───────────┘
+                                         │
+                               ┌─────────▼───────────┐
+                               │   Crawler Engine     │
+                               │  Playwright + BS4    │
+                               │  + OpenAI GPT        │
+                               └──────────────────────┘
 
-GPT가 페이지를 분석하여 자동으로 필드와 선택자를 설정합니다.
+┌─────────────────────────────────────────────────────────────┐
+│                      Monitoring                             │
+│          Prometheus → Grafana → Alertmanager                │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 프로젝트 구조
 
 ```
 airflow-crawler-system/
-├── api/                      # FastAPI REST API
+├── api/                          # FastAPI Backend
 │   ├── app/
-│   │   ├── auth/             # 인증 모듈
-│   │   ├── models/           # Pydantic 스키마
-│   │   ├── routers/          # API 엔드포인트
-│   │   └── services/         # 비즈니스 로직
-│   └── tests/                # API 테스트
-├── airflow/                  # Apache Airflow
-│   ├── dags/
-│   │   ├── dynamic_crawlers/ # 자동 생성된 크롤러 DAG
-│   │   └── utils/            # 유틸리티 모듈
-│   └── plugins/
-├── docs/                     # 문서
-├── scripts/                  # 초기화 스크립트
-└── docker-compose.yml
+│   │   ├── auth/                 # JWT 인증
+│   │   ├── models/               # Pydantic 스키마
+│   │   ├── routers/              # API 엔드포인트
+│   │   │   ├── sources.py        # 소스 CRUD
+│   │   │   ├── crawlers.py       # 크롤러 관리
+│   │   │   ├── reviews.py        # 데이터 리뷰
+│   │   │   ├── dashboard.py      # 대시보드 통계
+│   │   │   ├── quick_add.py      # AI Quick Add
+│   │   │   ├── export.py         # 데이터 내보내기
+│   │   │   └── monitoring.py     # 모니터링 API
+│   │   └── services/             # 비즈니스 로직
+│   │       ├── data_quality/     # 데이터 품질 검증
+│   │       ├── schema_registry/  # 스키마 레지스트리
+│   │       └── streaming/        # 스트리밍 내보내기
+│   ├── Dockerfile
+│   └── requirements.txt
+├── frontend/                     # React Frontend
+│   ├── src/
+│   │   ├── components/           # UI 컴포넌트
+│   │   ├── pages/                # 페이지
+│   │   │   ├── Dashboard.tsx     # 대시보드
+│   │   │   ├── Sources.tsx       # 소스 관리
+│   │   │   ├── QuickAdd.tsx      # Quick Add 마법사
+│   │   │   ├── ReviewPage.tsx    # 데이터 리뷰
+│   │   │   ├── Monitoring.tsx    # 모니터링
+│   │   │   └── DataQuality.tsx   # 데이터 품질
+│   │   └── services/             # API 클라이언트
+│   ├── Dockerfile
+│   └── package.json
+├── airflow/                      # Airflow DAGs
+│   └── dags/
+│       ├── source_manager_dag.py # 소스 관리 DAG
+│       ├── backup_dag.py         # 백업 DAG
+│       └── dynamic_crawlers/     # 자동 생성 크롤러
+├── crawlers/                     # 크롤러 엔진
+├── tests/                        # 테스트
+│   ├── api/                      # Backend 테스트 (466)
+│   └── e2e/                      # Playwright E2E
+│       ├── specs/                # 테스트 스펙
+│       └── fixtures/             # 테스트 픽스처
+├── .github/workflows/            # CI/CD
+│   ├── ci.yml                    # Lint + Test + Build
+│   ├── cd.yml                    # Deploy + Rollback
+│   ├── e2e.yml                   # E2E 테스트
+│   └── security.yml              # 보안 스캔
+├── prometheus/                   # 메트릭 수집
+├── grafana/                      # 대시보드
+├── alertmanager/                 # 알림
+├── nginx/                        # 리버스 프록시
+├── scripts/
+│   ├── deploy.sh                 # 배포 스크립트
+│   ├── rollback.sh               # 롤백 스크립트
+│   └── backup.sh                 # 백업 스크립트
+├── docker-compose.yml            # 기본 구성
+├── docker-compose.dev.yml        # 개발 오버라이드
+└── docker-compose.prod.yml       # 프로덕션 오버라이드
 ```
-
-## 주요 엔드포인트
-
-| 메서드 | 경로 | 설명 | 인증 |
-|-------|------|------|-----|
-| POST | `/api/auth/login` | 로그인 | - |
-| GET | `/api/sources` | 소스 목록 | 선택 |
-| POST | `/api/sources` | 소스 생성 | write |
-| PUT | `/api/sources/{id}` | 소스 수정 | write |
-| DELETE | `/api/sources/{id}` | 소스 삭제 | delete |
-| POST | `/api/sources/{id}/trigger` | 수동 실행 | write |
-| POST | `/api/quick-add` | 자동 설정 | write |
-| GET | `/api/dashboard/stats` | 대시보드 통계 | 선택 |
-| GET | `/api/errors` | 에러 로그 | 선택 |
-| GET | `/api/monitoring/health` | 서비스 상태 | - |
-
-전체 API 문서: http://localhost:8000/docs
-
-## 환경 변수
-
-### 필수
-
-| 변수 | 설명 | 예시 |
-|-----|------|-----|
-| `OPENAI_API_KEY` | OpenAI API 키 | `sk-...` |
-| `MONGODB_URI` | MongoDB 연결 URI | `mongodb://localhost:27017` |
-| `AIRFLOW_WEBSERVER_URL` | Airflow 웹서버 URL | `http://localhost:8080` |
-
-### 인증
-
-| 변수 | 설명 | 기본값 |
-|-----|------|-------|
-| `API_MASTER_KEYS` | 마스터 API 키 (쉼표 구분) | `dev-api-key-12345` |
-| `JWT_SECRET_KEY` | JWT 시크릿 키 | 개발용 기본값 |
-| `JWT_EXPIRE_MINUTES` | 토큰 만료 시간 (분) | `60` |
-| `ADMIN_PASSWORD` | 관리자 비밀번호 | `admin123` |
-| `AUTH_MODE` | 인증 모드 | `optional` |
-
-### 선택
-
-| 변수 | 설명 | 기본값 |
-|-----|------|-------|
-| `ENV` | 환경 | `development` |
-| `ALLOWED_ORIGINS` | CORS 허용 오리진 | `*` |
-| `ALLOWED_HOSTS` | 허용 호스트 | - |
-| `LOG_LEVEL` | 로그 레벨 | `INFO` |
 
 ## Self-Healing 시스템
 
-크롤링 실패 시 자동으로:
+크롤링 실패 시 자동 복구 파이프라인:
 
-1. **에러 분류**: 10가지 에러 코드로 자동 분류
-2. **진단**: GPT가 에러 원인 분석
-3. **해결책 탐색**: Wellknown case DB 또는 GPT 생성
-4. **코드 수정**: 자동 코드 패치 적용
-5. **테스트**: 수정된 코드 검증
-6. **학습**: 성공한 해결책 저장
+```
+실패 감지 → 에러 분류 → AI 진단 → 코드 수정 → 테스트 → 배포
+```
 
-### 에러 코드
+| 에러 코드 | 설명 | 자동 복구 |
+|-----------|------|-----------|
+| E001 | 요청 타임아웃 | O |
+| E002 | 선택자 없음 (사이트 변경) | O |
+| E003 | 인증 필요 | X |
+| E004 | 사이트 구조 변경 | O |
+| E005 | IP 차단 / Rate Limit | O |
+| E006 | 데이터 파싱 에러 | O |
+| E007 | 연결 에러 | O |
+| E008 | HTTP 에러 (4xx/5xx) | O |
 
-| 코드 | 설명 | 자동 복구 |
-|-----|------|----------|
-| E001 | 요청 타임아웃 | ✅ |
-| E002 | 선택자 없음 | ✅ |
-| E003 | 인증 필요 | ❌ |
-| E004 | 사이트 구조 변경 | ✅ |
-| E005 | IP 차단/Rate Limit | ✅ |
-| E006 | 데이터 파싱 에러 | ✅ |
-| E007 | 연결 에러 | ✅ |
-| E008 | HTTP 에러 | ✅ |
-| E009 | 파일 에러 | ❌ |
-| E010 | 알 수 없음 | ❌ |
+## 주요 API 엔드포인트
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `POST` | `/api/auth/login` | 로그인 |
+| `GET` | `/api/sources` | 소스 목록 |
+| `POST` | `/api/sources` | 소스 생성 |
+| `POST` | `/api/sources/{id}/trigger` | 수동 크롤링 실행 |
+| `POST` | `/api/quick-add` | AI Quick Add |
+| `POST` | `/api/quick-add/analyze` | URL 분석 |
+| `GET` | `/api/crawlers` | 크롤러 목록 |
+| `POST` | `/api/crawlers/{id}/rollback/{ver}` | 크롤러 롤백 |
+| `GET` | `/api/reviews/queue` | 리뷰 대기열 |
+| `PUT` | `/api/reviews/{id}` | 리뷰 처리 |
+| `POST` | `/api/reviews/batch-approve` | 일괄 승인 |
+| `GET` | `/api/dashboard` | 대시보드 통계 |
+| `GET` | `/api/monitoring/pipelines` | 파이프라인 상태 |
+| `GET` | `/health` | 헬스체크 |
+
+전체 API 문서: http://localhost:8000/docs
+
+## 배포
+
+### 프로덕션 실행
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+### 배포 스크립트
+
+```bash
+# 빌드 + 배포
+./scripts/deploy.sh
+
+# 빌드만
+./scripts/deploy.sh --build-only
+
+# 롤백
+./scripts/rollback.sh
+
+# 특정 버전으로 롤백
+./scripts/rollback.sh --to 20260213-abc1234
+
+# 배포 히스토리 확인
+./scripts/rollback.sh --list
+
+# 현재 배포 상태 검증
+./scripts/rollback.sh --verify
+```
+
+### CI/CD 파이프라인
+
+```
+Push → Lint → Test (466) → Build → Docker → Integration Test
+                                                    │
+PR to master ──────────────────────────────────────→ E2E Tests
+                                                    │
+Merge to master → Build Images → Staging Deploy → Smoke Tests → Production
+                                                                    │
+                                                      Fail? → Auto Rollback
+```
 
 ## 개발
 
-### 테스트 실행
+### 테스트
 
 ```bash
-# API 테스트
-cd api
-pytest tests/ -v
+# Backend (pytest)
+PYTHONPATH=. .venv/bin/pytest tests/ -v
 
-# 커버리지 포함
-pytest tests/ --cov=app --cov-report=html
+# Frontend (vitest)
+cd frontend && npm test
+
+# E2E (Playwright)
+cd frontend && npm run test:e2e
+
+# 특정 브라우저
+cd frontend && npm run test:e2e:chromium
 ```
 
-### 코드 스타일
+### 코드 품질
 
 ```bash
-# Linting
-ruff check .
+# Python lint
+ruff check api/ crawlers/ airflow/dags/
 
-# 포맷팅
-ruff format .
+# TypeScript 타입 체크
+cd frontend && npx tsc --noEmit
 ```
 
-### 로컬 개발 모드
+## 환경 변수
 
-```bash
-# 인증 비활성화
-export AUTH_MODE=disabled
+| 변수 | 필수 | 설명 |
+|------|------|------|
+| `OPENAI_API_KEY` | O | AI 크롤러 생성 |
+| `MONGO_ROOT_PASSWORD` | O | MongoDB 비밀번호 |
+| `POSTGRES_PASSWORD` | O | PostgreSQL 비밀번호 |
+| `AIRFLOW_FERNET_KEY` | O | Airflow 암호화 키 |
+| `JWT_SECRET_KEY` | O | JWT 토큰 서명 키 |
+| `ADMIN_PASSWORD` | O | 관리자 로그인 비밀번호 |
+| `AI_MODEL` | | AI 모델 (기본: `gpt-4o-mini`) |
+| `AI_BASE_URL` | | 커스텀 AI API URL (DeepSeek, Qwen 등) |
+| `SMTP_HOST` | | 알림 이메일 SMTP |
+| `GRAFANA_ADMIN_PASSWORD` | | Grafana 관리자 비밀번호 |
 
-# 개발 서버 실행
-uvicorn app.main:app --reload
-```
+전체 환경 변수 목록은 `.env.example` 참고.
 
 ## 문서
 
-- [예외처리/Validation 매뉴얼](docs/EXCEPTION_VALIDATION_MANUAL.md)
-- [API 문서](http://localhost:8000/docs) (서버 실행 후)
+- [아키텍처](docs/architecture.md)
+- [API 레퍼런스](docs/api-reference.md)
+- [데이터 모델](docs/data-model.md)
+- [CI/CD 파이프라인](docs/ci-cd-pipeline.md)
+- [운영 런북](docs/operations-runbook.md)
+- [온보딩 가이드](docs/onboarding.md)
+- [예외처리 매뉴얼](docs/EXCEPTION_VALIDATION_MANUAL.md)
 
 ## 라이선스
 
 MIT License
-
-## 기여
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
