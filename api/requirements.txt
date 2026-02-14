@@ -28,7 +28,7 @@ lxml==5.1.0
 croniter==6.0.0
 
 # WebSocket support
-websockets==15.0.1
+websockets==16.0
 
 # Logging
 structlog>=24.1.0
