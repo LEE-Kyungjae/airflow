@@ -55,7 +55,8 @@ RUN pip install --no-cache-dir \
     croniter \
     playwright \
     boto3 \
-    google-cloud-storage
+    google-cloud-storage \
+    psycopg2-binary
 
 # Install Playwright Chromium browser only (smaller image)
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/airflow/.cache/ms-playwright

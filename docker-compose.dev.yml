@@ -30,6 +30,12 @@ x-airflow-common:
     MONGODB_DATABASE: ${MONGODB_DATABASE:-crawler_system_dev}
     ENVIRONMENT: ${ENVIRONMENT:-development}
     DEBUG: ${DEBUG:-true}
+    # gahyeonbot PostgreSQL (via SSH tunnel on host)
+    GAHYEONBOT_DB_HOST: ${GAHYEONBOT_DB_HOST:-host.docker.internal}
+    GAHYEONBOT_DB_PORT: ${GAHYEONBOT_DB_PORT:-15432}
+    GAHYEONBOT_DB_USER: ${GAHYEONBOT_DB_USER:-gahyeonbot_app}
+    GAHYEONBOT_DB_PASSWORD: ${GAHYEONBOT_DB_PASSWORD}
+    GAHYEONBOT_DB_NAME: ${GAHYEONBOT_DB_NAME:-gahyeonbot}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/plugins:/opt/airflow/plugins
