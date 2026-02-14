@@ -121,6 +121,9 @@ def preflight_gahyeonbot_schema(**context):
                     "Apply DB migrations (Flyway) before running this DAG."
                 )
             logger.info("Preflight OK: %s exists", github_trending)
+
+        # Ensure the delta-event table exists even if there are 0 new repos today.
+        _ensure_events_table(conn)
     finally:
         conn.close()
 
