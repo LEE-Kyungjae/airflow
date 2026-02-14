@@ -6,8 +6,9 @@ version: '3.8'
 x-airflow-common:
   &airflow-common
   build:
-    context: ./airflow
-    dockerfile: Dockerfile
+    # airflow/Dockerfile expects project-root build context (it COPYs airflow/* and crawlers/*)
+    context: .
+    dockerfile: airflow/Dockerfile
   image: airflow-crawler-custom:dev
   environment:
     &airflow-common-env
