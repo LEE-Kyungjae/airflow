@@ -69,40 +69,11 @@ def _parse_count(text: str) -> int:
     return int(num)
 
 
-def _ensure_events_table(conn) -> None:
-    """
-    Table for "newly added since last snapshot" events.
-
-    봇은 이 테이블에서 sent_at IS NULL 같은 조건으로 폴링하면 됨.
-    """
-    ddl = """
-    CREATE TABLE IF NOT EXISTS github_trending_events (
-        id BIGSERIAL PRIMARY KEY,
-        snapshot_date DATE NOT NULL,
-        repo_full_name TEXT NOT NULL,
-        repo_url TEXT NOT NULL,
-        description TEXT NULL,
-        language TEXT NULL,
-        stars_total INTEGER NOT NULL DEFAULT 0,
-        stars_period INTEGER NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        sent_at TIMESTAMPTZ NULL
-    );
-    """
-    ddl_idx = """
-    CREATE UNIQUE INDEX IF NOT EXISTS github_trending_events_uq
-        ON github_trending_events (snapshot_date, repo_full_name);
-    """
-    with conn.cursor() as cur:
-        cur.execute(ddl)
-        cur.execute(ddl_idx)
-    conn.commit()
-
 def preflight_gahyeonbot_schema(**context):
     """
-    Fail fast if the required snapshot table doesn't exist.
+    Fail fast if required tables don't exist.
 
-    We intentionally do NOT auto-create github_trending here: schema should be
+    We intentionally do NOT auto-create tables here: schema should be
     managed by the application migration tool (e.g., Flyway) to avoid drift.
     """
     conn = _get_pg_conn()
@@ -111,19 +82,24 @@ def preflight_gahyeonbot_schema(**context):
             cur.execute(
                 """
                 SELECT
-                  to_regclass('public.github_trending') AS github_trending
+                  to_regclass('public.github_trending') AS github_trending,
+                  to_regclass('public.github_trending_events') AS github_trending_events
                 """
             )
-            github_trending = cur.fetchone()[0]
+            row = cur.fetchone()
+            github_trending = row[0]
+            github_trending_events = row[1]
             if not github_trending:
                 raise RuntimeError(
                     "Missing required table public.github_trending in gahyeonbot DB. "
                     "Apply DB migrations (Flyway) before running this DAG."
                 )
-            logger.info("Preflight OK: %s exists", github_trending)
-
-        # Ensure the delta-event table exists even if there are 0 new repos today.
-        _ensure_events_table(conn)
+            if not github_trending_events:
+                raise RuntimeError(
+                    "Missing required table public.github_trending_events in gahyeonbot DB. "
+                    "Apply DB migrations (Flyway) before running this DAG."
+                )
+            logger.info("Preflight OK: %s and %s exist", github_trending, github_trending_events)
     finally:
         conn.close()
 
@@ -348,7 +324,6 @@ def insert_new_events(**context):
 
     conn = _get_pg_conn()
     try:
-        _ensure_events_table(conn)
         with conn.cursor() as cur:
             execute_values(
                 cur,
