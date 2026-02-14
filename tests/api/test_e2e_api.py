@@ -48,14 +48,23 @@ def mock_mongo():
 
 @pytest.fixture
 def client(mock_mongo):
-    """Create TestClient with mocked MongoDB."""
+    """Create TestClient with mocked MongoDB and auth bypassed."""
     with patch("app.services.mongo_service.MongoService") as MockClass:
         MockClass.return_value = mock_mongo
 
         from app.main import app
+        from app.auth.dependencies import require_auth, optional_auth, AuthContext
+
+        test_auth = AuthContext(
+            auth_type="api_key", user_id="test-user", role="admin", scopes=["admin"]
+        )
+        app.dependency_overrides[require_auth] = lambda: test_auth
+        app.dependency_overrides[optional_auth] = lambda: test_auth
 
         with TestClient(app, raise_server_exceptions=False) as test_client:
             yield test_client
+
+        app.dependency_overrides.clear()
 
 
 # ============================================================

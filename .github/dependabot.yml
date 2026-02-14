@@ -43,6 +43,9 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "pydantic"
         update-types: ["version-update:semver-major"]
+    # Allow automated minor and patch updates
+    allow:
+      - dependency-type: "all"
 
   # GitHub Actions dependencies
   - package-ecosystem: "github-actions"
@@ -131,3 +134,6 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "react-dom"
         update-types: ["version-update:semver-major"]
+    # Allow automated minor and patch updates
+    allow:
+      - dependency-type: "all"

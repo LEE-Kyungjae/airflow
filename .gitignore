@@ -7,20 +7,26 @@ __pycache__/
 venv/
 env/
 .venv/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*.sublime-*
 
 # Environment
 .env
-.env.dev
+.env.*
 !.env.example
 
 # Docker
 *.log
+docker-compose.override.yml
+.deploy/
 
 # Backups
 backups/
@@ -32,16 +38,29 @@ airflow/logs/
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Node / Frontend
 node_modules/
 dist/
+.next/
+out/
 *.tsbuildinfo
+.eslintcache
+
+# Build artifacts
+build/
+coverage/
 
 # Test
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
+playwright-report/
+test-results/
 
 # Claude Code / OMC
 .claude/
@@ -49,3 +68,6 @@ htmlcov/
 
 # Misc
 nul
+*.bak
+*.tmp
+*.swp

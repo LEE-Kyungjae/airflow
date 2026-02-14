@@ -2,9 +2,9 @@ name: Security Scan
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   schedule:
     # Run weekly on Sunday at midnight
     - cron: '0 0 * * 0'
@@ -16,8 +16,8 @@ permissions:
   actions: read
 
 jobs:
-  dependency-scan:
-    name: Dependency Vulnerability Scan
+  python-dependency-scan:
+    name: Python Dependencies (pip-audit)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -46,6 +46,34 @@ jobs:
             sbom-api.json
           retention-days: 30
 
+  npm-dependency-scan:
+    name: Frontend Dependencies (npm audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run npm audit
+        run: |
+          npm audit --json > npm-audit.json || true
+          npm audit --audit-level=high || true
+        continue-on-error: true
+
+      - name: Upload npm audit results
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-audit-results
+          path: frontend/npm-audit.json
+          retention-days: 30
+
   trivy-scan:
     name: Trivy Container Scan
     runs-on: ubuntu-latest
@@ -72,23 +100,23 @@ jobs:
           category: 'trivy-api'
         if: always()
 
-      - name: Build Airflow image for scanning
-        run: docker build -t crawler-airflow:scan ./airflow
+      - name: Build Frontend image for scanning
+        run: docker build -t crawler-frontend:scan ./frontend
 
-      - name: Run Trivy vulnerability scanner on Airflow image
+      - name: Run Trivy vulnerability scanner on Frontend image
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'crawler-airflow:scan'
+          image-ref: 'crawler-frontend:scan'
           format: 'sarif'
-          output: 'trivy-airflow-results.sarif'
+          output: 'trivy-frontend-results.sarif'
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
 
-      - name: Upload Trivy Airflow scan results to GitHub Security tab
+      - name: Upload Trivy Frontend scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: 'trivy-airflow-results.sarif'
-          category: 'trivy-airflow'
+          sarif_file: 'trivy-frontend-results.sarif'
+          category: 'trivy-frontend'
         if: always()
 
       - name: Run Trivy filesystem scan
@@ -198,7 +226,7 @@ jobs:
   security-report:
     name: Generate Security Report
     runs-on: ubuntu-latest
-    needs: [dependency-scan, trivy-scan, secret-scan, bandit-scan]
+    needs: [python-dependency-scan, npm-dependency-scan, trivy-scan, secret-scan, bandit-scan]
     if: always()
     steps:
       - name: Download all artifacts
@@ -213,12 +241,14 @@ jobs:
           echo "## Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "| Scan Type | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Dependency Scan | ${{ needs.dependency-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python Dependencies (pip-audit) | ${{ needs.python-dependency-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Dependencies (npm audit) | ${{ needs.npm-dependency-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Trivy Container Scan | ${{ needs.trivy-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Secret Detection | ${{ needs.secret-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Bandit Security Linter | ${{ needs.bandit-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Check the Security tab for detailed findings." >> $GITHUB_STEP_SUMMARY
+          echo "## Details" >> $GITHUB_STEP_SUMMARY
+          echo "Check the Security tab for detailed findings and SARIF reports." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload combined security reports
         uses: actions/upload-artifact@v6

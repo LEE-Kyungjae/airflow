@@ -18,11 +18,14 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from slowapi.middleware import SlowAPIMiddleware
 
-from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions, e2e_pipeline
+from app.routers import sources, crawlers, errors, dashboard, quick_add, monitoring, auth, auth_config, reviews, data_quality, metrics, lineage, export, backup, contracts, schemas, catalog, versions, e2e_pipeline, production_data
 from app.services.mongo_service import MongoService
 from app.auth import APIKeyAuth, JWTAuth
-from app.core import configure_logging, get_logger, CorrelationIdMiddleware
+from app.core import configure_logging, get_logger, CorrelationIdMiddleware, validate_all_secrets
 from app.middleware.rate_limiter import limiter, RateLimitExceeded, rate_limit_exceeded_handler
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.middleware.request_id import RequestIdMiddleware
+from app.middleware.audit_log import AuditLogMiddleware
 
 # Configure structured logging
 configure_logging()
@@ -149,6 +152,10 @@ TAGS_METADATA = [
         "description": "End-to-end automation pipeline: URL input to fully deployed crawler with monitoring.",
     },
     {
+        "name": "Production Data",
+        "description": "PostgreSQL production data queries, common codes, domain statistics, and promotion history.",
+    },
+    {
         "name": "Health",
         "description": "System health check endpoints for load balancers and monitoring.",
     },
@@ -165,6 +172,27 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Crawler System API...")
 
+    # Validate secrets and environment variables
+    # In production, CRITICAL failures will call sys.exit(1)
+    try:
+        validate_all_secrets()
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.error(f"Secret validation error: {e}")
+
+    # Run pre-flight checks
+    try:
+        from app.core.startup_checks import run_startup_checks
+        checks_passed, check_results = await run_startup_checks()
+
+        if not checks_passed:
+            logger.error("Pre-flight checks failed - some critical components may not be available")
+        else:
+            logger.info("All pre-flight checks passed")
+    except Exception as e:
+        logger.error(f"Pre-flight checks failed: {e}")
+
     # Test MongoDB connection
     try:
         mongo = MongoService()
@@ -174,10 +202,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
 
+    # Connect PostgreSQL (graceful degradation if unavailable)
+    try:
+        from app.services.postgres_service import get_pg, close_pg
+        pg = await get_pg()
+        if pg.is_available:
+            logger.info("PostgreSQL connection successful")
+        else:
+            logger.warning("PostgreSQL not available (asyncpg missing or connection failed)")
+    except Exception as e:
+        logger.warning(f"PostgreSQL startup skipped: {e}")
+
     yield
 
     # Shutdown
     logger.info("Shutting down Crawler System API...")
+
+    # Disconnect PostgreSQL
+    try:
+        from app.services.postgres_service import close_pg
+        await close_pg()
+    except Exception:
+        pass
 
 
 # Create FastAPI application
@@ -211,7 +257,8 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS if os.getenv("ENV") == "production" else ["*"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID", "X-Correlation-ID"],
+    expose_headers=["X-Request-ID", "X-Correlation-ID"],
     max_age=86400,
 )
 
@@ -231,6 +278,25 @@ app.add_middleware(SlowAPIMiddleware)
 
 # Correlation ID middleware for request tracing
 app.add_middleware(CorrelationIdMiddleware)
+
+# Prometheus metrics middleware
+from app.middleware.metrics import PrometheusMetricsMiddleware
+app.add_middleware(PrometheusMetricsMiddleware)
+
+# ============================================================
+# Security Middleware Stack
+# ============================================================
+# Middleware executes in LIFO order (last added = first to run).
+# Execution order: RequestId -> SecurityHeaders -> AuditLog -> ... app ...
+
+# Audit log middleware (logs all API requests with structured metadata)
+app.add_middleware(AuditLogMiddleware)
+
+# Security headers middleware (X-Content-Type-Options, CSP, HSTS, etc.)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Request ID middleware (generates X-Request-ID for every request)
+app.add_middleware(RequestIdMiddleware)
 
 
 # Exception handlers
@@ -270,18 +336,19 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get(
     "/health",
     tags=["Health"],
-    summary="Health Check",
-    description="Returns the health status of the API service. Used by load balancers and monitoring systems.",
+    summary="Simple Health Check",
+    description="Returns basic health status. Used by load balancers and monitoring systems.",
     response_description="Health status with timestamp",
     responses={
         200: {
-            "description": "Service is healthy",
+            "description": "Service is healthy or degraded",
             "content": {
                 "application/json": {
                     "example": {
                         "status": "healthy",
-                        "timestamp": "2025-02-05T12:00:00Z",
-                        "service": "crawler-system-api"
+                        "timestamp": "2025-02-13T12:00:00Z",
+                        "service": "crawler-system-api",
+                        "version": "1.0.0"
                     }
                 }
             }
@@ -292,8 +359,8 @@ async def global_exception_handler(request: Request, exc: Exception):
                 "application/json": {
                     "example": {
                         "status": "unhealthy",
-                        "timestamp": "2025-02-05T12:00:00Z",
-                        "error": "Database connection failed"
+                        "timestamp": "2025-02-13T12:00:00Z",
+                        "error": "Critical components unavailable"
                     }
                 }
             }
@@ -309,13 +376,57 @@ async def health_check():
     - Kubernetes liveness/readiness checks
     - Monitoring system uptime checks
 
-    Returns a simple status object indicating service availability.
+    Returns 200 for healthy/degraded, 503 for unhealthy.
     """
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "service": "crawler-system-api"
-    }
+    from app.services.health_service import get_health_service
+
+    health_service = get_health_service()
+    health = await health_service.check_health(detailed=False)
+
+    status_code = 503 if health["status"] == "unhealthy" else 200
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": health["status"],
+            "timestamp": health["timestamp"],
+            "service": "crawler-system-api",
+            "version": health["version"],
+            "uptime_seconds": health["uptime_seconds"]
+        }
+    )
+
+
+@app.get(
+    "/health/detailed",
+    tags=["Health"],
+    summary="Detailed Health Check",
+    description="Returns detailed health information for all system components.",
+    response_description="Detailed health status with component breakdown"
+)
+async def health_check_detailed():
+    """
+    Perform a detailed health check with component-level information.
+
+    This endpoint provides:
+    - Individual component health status (MongoDB, PostgreSQL, disk, memory)
+    - Response times for each component
+    - System information (CPU, memory, disk usage)
+    - Application version and uptime
+
+    Useful for debugging and detailed monitoring.
+    """
+    from app.services.health_service import get_health_service
+
+    health_service = get_health_service()
+    health = await health_service.check_health(detailed=True)
+
+    status_code = 503 if health["status"] == "unhealthy" else 200
+
+    return JSONResponse(
+        status_code=status_code,
+        content=health
+    )
 
 
 # Root endpoint
@@ -362,4 +473,5 @@ app.include_router(schemas.router, prefix="/api/schemas", tags=["Schemas"])  # �
 app.include_router(catalog.router, prefix="/api/catalog", tags=["Catalog"])  # 데이터 카탈로그
 app.include_router(versions.router, prefix="/api/versions", tags=["Versions"])  # 데이터 버전 관리
 app.include_router(auth_config.router, prefix="/api/sources", tags=["Auth Config"])  # 소스별 인증 설정
-app.include_router(e2e_pipeline.router, prefix="/api/e2e", tags=["E2E Pipeline"])  # E2E 자동화 파이프라인  # 소스별 인증 설정
+app.include_router(e2e_pipeline.router, prefix="/api/e2e", tags=["E2E Pipeline"])  # E2E 자동화 파이프라인
+app.include_router(production_data.router, prefix="/api/production", tags=["Production Data"])  # PostgreSQL 프로덕션 데이터

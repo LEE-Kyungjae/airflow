@@ -25,7 +25,7 @@ from ..models.schemas import (
     BulkJobStatus
 )
 from ..services.mongo_service import get_db, MongoService
-from ..services.data_promotion import DataPromotionService
+from ..services.data_promotion import DataPromotionService, promote_to_pg
 from ..services.review_service import ReviewService
 from app.auth.dependencies import require_auth, require_scope, require_admin, AuthContext
 
@@ -589,6 +589,21 @@ async def update_review(
                     }}
                 )
                 logger.info(f"Promoted staging/{staging_id} to production/{production_id}")
+
+                # Dual-write to PostgreSQL (non-blocking, graceful degradation)
+                final_data = update_data.get("corrected_data") or review.get("original_data", {})
+                await promote_to_pg(
+                    source_id=str(review.get("source_id", "")),
+                    data=final_data,
+                    review_id=review_id,
+                    production_id=str(production_id) if production_id else None,
+                    staging_id=str(staging_id),
+                    reviewer_id=reviewer_id,
+                    has_corrections=bool(corrections_list),
+                    corrections=corrections_list,
+                    crawled_at=review.get("created_at"),
+                    data_date=review.get("data_date"),
+                )
             else:
                 logger.warning(f"Promotion failed for review {review_id}: {message}")
         else:

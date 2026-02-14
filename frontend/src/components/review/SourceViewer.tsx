@@ -26,8 +26,8 @@ export function SourceViewer({ content, activeHighlight, isLoading }: SourceView
         if (iframeDoc) {
           // Remove previous highlights
           iframeDoc.querySelectorAll('.review-highlight').forEach((el) => {
-            (el as HTMLElement).style.outline = ''
-            (el as HTMLElement).style.backgroundColor = ''
+            ;(el as HTMLElement).style.outline = ''
+            ;(el as HTMLElement).style.backgroundColor = ''
             el.classList.remove('review-highlight')
           })
 

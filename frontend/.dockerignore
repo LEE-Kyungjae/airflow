@@ -1,0 +1,23 @@
+# frontend/.dockerignore
+node_modules
+dist
+.cache
+coverage
+*.md
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose*
+.env
+.env.*
+.vscode
+.idea
+tests
+__tests__
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+playwright-report
+test-results

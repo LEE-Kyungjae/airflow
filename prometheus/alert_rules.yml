@@ -49,27 +49,27 @@ groups:
   - name: api_health
     rules:
       - alert: APIHighLatency
-        expr: etl_processing_latency_seconds > 5
-        for: 3m
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, method, path)) > 2
+        for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "API processing latency exceeds 5 seconds"
-          description: "Processing latency is {{ $value | humanizeDuration }}."
+          summary: "API request latency p95 exceeds 2 seconds"
+          description: "95th percentile latency for {{ $labels.method }} {{ $labels.path }} is {{ $value | humanizeDuration }}."
 
       - alert: APIHighErrorRate
         expr: |
           (
-            sum(rate(etl_pipeline_executions_total{status="failed"}[5m]))
+            sum(rate(http_errors_total[5m]))
             /
-            sum(rate(etl_pipeline_executions_total[5m]))
+            sum(rate(http_requests_total[5m]))
           ) > 0.05
-        for: 3m
+        for: 5m
         labels:
           severity: critical
         annotations:
           summary: "API error rate exceeds 5%"
-          description: "API error rate is {{ $value | humanizePercentage }}."
+          description: "API error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
 
       - alert: APIDown
         expr: up{job="etl-api"} == 0
@@ -79,6 +79,15 @@ groups:
         annotations:
           summary: "ETL API is down"
           description: "The API server has been unreachable for more than 1 minute."
+
+      - alert: HealthCheckFailing
+        expr: up{job="etl-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Health check endpoint failing"
+          description: "The /health endpoint has been failing for more than 1 minute."
 
   # ============================================
   # MongoDB Alerts
@@ -95,28 +104,71 @@ groups:
           description: "MongoDB has been unreachable for more than 1 minute."
 
   # ============================================
+  # PostgreSQL Alerts
+  # ============================================
+  - name: postgresql_health
+    rules:
+      - alert: PostgreSQLConnectionPoolExhausted
+        expr: pg_stat_database_numbackends / pg_settings_max_connections > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL connection pool near exhaustion"
+          description: "Database connections at {{ $value | humanizePercentage }} of max_connections."
+
+  # ============================================
   # Infrastructure Alerts
   # ============================================
   - name: infrastructure
     rules:
       - alert: HighMemoryUsage
-        expr: process_resident_memory_bytes / 1024 / 1024 > 512
+        expr: |
+          (
+            (process_resident_memory_bytes / 1024 / 1024)
+            /
+            (node_memory_MemTotal_bytes / 1024 / 1024)
+          ) > 0.85
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "High memory usage detected"
-          description: "Process memory usage is {{ $value | humanize }}MB."
+          description: "Process memory usage exceeds 85% of available memory."
 
-      - alert: DiskSpaceRunningLow
+      - alert: CriticalMemoryUsage
         expr: |
-          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.2
+          (
+            (process_resident_memory_bytes / 1024 / 1024)
+            /
+            (node_memory_MemTotal_bytes / 1024 / 1024)
+          ) > 0.95
         for: 5m
         labels:
           severity: critical
         annotations:
+          summary: "Critical memory usage detected"
+          description: "Process memory usage exceeds 95% of available memory - risk of OOM."
+
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
           summary: "Disk space below 20%"
           description: "Available disk space is {{ $value | humanizePercentage }}."
+
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space below 10% - CRITICAL"
+          description: "Available disk space is {{ $value | humanizePercentage }} - immediate action required."
 
       - alert: PrometheusTargetDown
         expr: up == 0

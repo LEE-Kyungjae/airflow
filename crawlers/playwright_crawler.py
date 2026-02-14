@@ -1631,6 +1631,8 @@ class PlaywrightCrawler:
 
     def _parse_number(self, value: str) -> Optional[float]:
         """Parse number from string."""
+        if value is None:
+            return None
         import re
 
         # Remove common symbols

@@ -213,12 +213,16 @@ class PrometheusRegistry:
     def register(
         self,
         name: str,
-        metric_type: MetricType,
+        metric_type,  # Can be MetricType or str
         help_text: str,
         labels: List[str] = None,
         buckets: List[float] = None
     ):
         """메트릭 등록"""
+        # Convert string to MetricType if needed
+        if isinstance(metric_type, str):
+            metric_type = MetricType(metric_type)
+
         with self._lock:
             self._metrics[name] = MetricDefinition(
                 name=name,
