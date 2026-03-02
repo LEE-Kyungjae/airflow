@@ -126,7 +126,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage HTML report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: htmlcov/
@@ -157,7 +157,7 @@ jobs:
         run: npm run build
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: frontend/dist/
@@ -188,7 +188,7 @@ jobs:
           outputs: type=docker,dest=/tmp/${{ matrix.service }}-image.tar
 
       - name: Upload image artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: docker-image-${{ matrix.service }}
           path: /tmp/${{ matrix.service }}-image.tar
@@ -344,7 +344,7 @@ jobs:
           API_URL: http://localhost:8000
 
       - name: Upload E2E results on failure
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-smoke-results
