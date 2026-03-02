@@ -38,7 +38,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload pip-audit results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: pip-audit-results
           path: |
@@ -68,7 +68,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload npm audit results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: npm-audit-results
           path: frontend/npm-audit.json
@@ -217,7 +217,7 @@ jobs:
         if: always()
 
       - name: Upload Bandit JSON results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: bandit-results
           path: bandit-results.json
@@ -230,7 +230,7 @@ jobs:
     if: always()
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: security-reports
 
@@ -251,7 +251,7 @@ jobs:
           echo "Check the Security tab for detailed findings and SARIF reports." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload combined security reports
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: security-reports-combined
           path: security-reports/
